@@ -118,7 +118,7 @@ services:
     restart: unless-stopped
     depends_on: [agent]
     environment:
-      AGENT_HOSTNAME: ${AGENT_HOSTNAME:-tally-agent.internal}
+      AGENT_HOSTNAME: ${AGENT_HOSTNAME:?set AGENT_HOSTNAME in .env to the Tailscale IP}
       ALLOWED_CIDRS: ${ALLOWED_CIDRS:-100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1/8}
     # Bind to the Tailscale address only (tailscale ip -4). Never 0.0.0.0.
     ports: ["${CADDY_BIND_IP:?set CADDY_BIND_IP to this machine's Tailscale IP}:443:443"]

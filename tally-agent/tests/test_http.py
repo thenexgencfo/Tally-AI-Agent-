@@ -116,3 +116,21 @@ def test_removing_a_user_revokes_access_without_restart(client):
         with open(path, "w") as f:
             f.write(original)
         os.utime(path, ns=(time.time_ns(), time.time_ns() + 3_000_000))
+
+
+def test_unfilled_example_entries_are_skipped(tmp_path):
+    import json
+    from app.auth import UserStore
+    p = tmp_path / "users.json"
+    p.write_text(json.dumps([
+        {"id": "todo", "role": "partner", "companies": [1], "telegram_id": "42", "key_sha256": "REPLACE"},
+        {"id": "real", "role": "junior", "companies": [1], "key_sha256": "a" * 64},
+    ]))
+    store = UserStore.load(p)
+    assert set(store.by_id) == {"real"} and "42" not in store.by_telegram
+
+
+def test_shipped_example_file_loads():
+    from app.auth import UserStore
+    store = UserStore.load("config/users.example.json")
+    assert store.by_id == {} and store.by_telegram == {}

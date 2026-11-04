@@ -4,7 +4,7 @@
     "role": "partner",
     "companies": [1],
     "may_unmask": true,
-    "telegram_id": "123456789",
+    "telegram_id": "",
     "key_sha256": "REPLACE: python scripts/new_api_key.py"
   },
   {

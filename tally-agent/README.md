@@ -70,7 +70,7 @@ every request written to an append-only audit log first; if that fails, nothing 
 | `sync/` | Windows sync runner and example loader and company configs |
 | `scripts/` | DB setup, API keys, company provisioning, encrypted backup and restore, test runner |
 | `n8n/` | Health/sync alert workflow and the Telegram bot workflow |
-| `tests/` | 95 tests, covering the security claims end to end. See `SECURITY.md` |
+| `tests/` | 97 tests, covering the security claims end to end. See `SECURITY.md` |
 
 ## Reports available
 
@@ -81,7 +81,7 @@ To add a report, write a SQL function in `sql/03_reports.sql`, add an entry to `
 ## What has been verified, and what hasn't
 
 **Verified here**
-- All 95 tests pass against real PostgreSQL 16 and Redis. The demo company's figures were checked by hand: the trial balance balances at ₹10,51,000, net profit is ₹1,49,000, and the ageing buckets match.
+- All 97 tests pass against real PostgreSQL 16 and Redis. The demo company's figures were checked by hand: the trial balance balances at ₹10,51,000, net profit is ₹1,49,000, and the ageing buckets match.
 - The ingest bridge works against a schema built from tally-database-loader's published DDL, and re-running it is idempotent.
 - The full Docker stack (Postgres, Redis, agent, Caddy) built and answered questions over TLS: correct answers, masked audit rows, 403 on cross-company requests, 413 on oversized bodies, and all security headers present.
 
@@ -95,9 +95,11 @@ To add a report, write a SQL function in `sql/03_reports.sql`, add an entry to `
 
 ## Install on the Windows PC
 
+**Step-by-step guide with every command: [SETUP-WINDOWS.md](SETUP-WINDOWS.md).** Summary:
+
 Prerequisites: Tally Prime Gold with the XML server enabled (F1 › Settings › Connectivity › Client/Server › *Both*, port 9000); Docker Desktop on WSL2 with GPU support and a current NVIDIA driver (the RTX 50 series needs a recent one); Tailscale; Node.js (for the loader); [age](https://age-encryption.org) for backups.
 
-1. **Secrets.** Copy `deploy/.env.example` to `deploy/.env` and fill in every secret using the CSPRNG command shown in that file. Set `CADDY_BIND_IP` to the output of `tailscale ip -4`.
+1. **Secrets.** Copy `deploy/.env.example` to `deploy/.env` and fill in every secret using the CSPRNG command shown in that file. Set `CADDY_BIND_IP` to the output of `tailscale ip -4`, and `AGENT_HOSTNAME` to the same IP.
 2. **Users.** Copy `config/users.example.json` to `config/users.json`. For each person, run `.\scripts\new-api-key.ps1`, give them the key, and store only the hash. Roles are `junior`, `senior` or `partner`. `may_unmask: false` shows names as "Party 1". The Telegram bridge entry must keep `force_masked: true`. Edits take effect immediately, with no restart.
 3. **Model.** From `deploy/`, run:
    ```

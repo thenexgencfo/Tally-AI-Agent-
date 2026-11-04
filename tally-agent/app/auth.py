@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,6 +23,7 @@ from pathlib import Path
 import redis.asyncio as aioredis
 
 ROLES = ("junior", "senior", "partner")
+log = logging.getLogger("tally_agent")
 
 
 @dataclass(frozen=True)
@@ -77,6 +79,11 @@ class UserStore:
             if row.get("disabled"):
                 continue
             digest = row.get("key_sha256", "")
+            if digest.upper().startswith("REPLACE"):
+                # Unfilled example entry: skip it (and never let it delegate or
+                # be reached by Telegram ID) rather than refusing to start.
+                log.warning("users file: %s has no key yet, skipped", user.id)
+                continue
             if digest:
                 if len(digest) != 64:
                     raise ValueError(f"user {user.id}: key_sha256 must be 64 hex chars")
