@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tally Agent</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <h1>Tally Agent</h1>
+  <span id="whoami" class="muted"></span>
+  <span id="fresh" class="badge" hidden></span>
+  <button type="button" id="signout" class="link" hidden>Sign out</button>
+</header>
+
+<main>
+  <section id="signin" class="card">
+    <h2>Sign in</h2>
+    <p class="muted">Use the personal API key issued to you. It is kept only for this browser tab.</p>
+    <form id="signin-form">
+      <input id="key" type="password" autocomplete="off" placeholder="tak_..." required>
+      <button type="submit">Connect</button>
+    </form>
+    <p id="signin-error" class="error" hidden></p>
+  </section>
+
+  <section id="workspace" hidden>
+    <div class="row">
+      <label>Company <select id="company"></select></label>
+      <nav class="tabs">
+        <button type="button" data-tab="ask" class="active">Ask</button>
+        <button type="button" data-tab="forms">Reports (no AI)</button>
+      </nav>
+    </div>
+
+    <div id="tab-ask" class="card">
+      <form id="ask-form">
+        <textarea id="question" rows="2" maxlength="1000"
+          placeholder="e.g. How much does Acme owe us?  ·  Receivables ageing  ·  Net profit for FY 2024-25"></textarea>
+        <button type="submit">Ask</button>
+      </form>
+    </div>
+
+    <div id="tab-forms" class="card" hidden>
+      <form id="report-form">
+        <label>Report <select id="report-id"></select></label>
+        <div id="report-params"></div>
+        <button type="submit">Run</button>
+      </form>
+    </div>
+
+    <p id="error" class="error" role="alert" hidden></p>
+
+    <section id="result" class="card" hidden>
+      <p id="answer" class="answer"></p>
+      <div id="explanation" class="explanation" hidden>
+        <span class="label">Model explanation, checked against the figures</span>
+        <p id="explanation-text"></p>
+      </div>
+      <ul id="warnings" class="warnings"></ul>
+      <p id="meta" class="muted small"></p>
+      <div class="table-wrap"><table id="rows"></table></div>
+    </section>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

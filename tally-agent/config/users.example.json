@@ -1,0 +1,33 @@
+[
+  {
+    "id": "partner.sharma",
+    "role": "partner",
+    "companies": [1],
+    "may_unmask": true,
+    "telegram_id": "",
+    "key_sha256": "REPLACE: python scripts/new_api_key.py"
+  },
+  {
+    "id": "senior.iyer",
+    "role": "senior",
+    "companies": [1],
+    "may_unmask": true,
+    "key_sha256": "REPLACE"
+  },
+  {
+    "id": "article.khan",
+    "role": "junior",
+    "companies": [1],
+    "may_unmask": false,
+    "key_sha256": "REPLACE"
+  },
+  {
+    "id": "svc.n8n-telegram",
+    "role": "junior",
+    "companies": [],
+    "can_delegate": true,
+    "force_masked": true,
+    "delegate_via": ["tg"],
+    "key_sha256": "REPLACE"
+  }
+]

@@ -1,0 +1,152 @@
+# Tally Agent stack.  Run from this folder:
+#   docker compose --env-file .env up -d --build
+#
+# Network layout
+#   backend  (internal: true) postgres, redis, ollama, agent  -- NO internet route
+#   frontend (internal: true) caddy <-> agent                  -- NO internet route
+#   edge                       caddy only: carries the published HTTPS port
+#   dbhost                     postgres only: carries the loopback port the Windows
+#                              sync tool uses (Docker ignores port mappings on
+#                              containers attached only to internal networks)
+#   egress                     only the one-off model download (profile "setup")
+#
+# Image tags are pinned for reproducibility. Bump them to current patch
+# releases when you deploy, then re-run the test-suite.
+name: tally-agent
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16.6-bookworm}
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set in .env}
+      RO_PASS: ${RO_PASS:?set in .env}
+      OWNER_PASS: ${OWNER_PASS:?set in .env}
+      DB_NAME: tally
+      SEED: ${SEED_DEMO_DATA:-0}
+    command: >
+      postgres
+      -c password_encryption=scram-sha-256
+      -c log_connections=on
+      -c log_disconnections=on
+      -c log_statement=ddl
+      -c statement_timeout=60000
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../sql:/opt/tally-agent/sql:ro
+      - ../scripts:/opt/tally-agent/scripts:ro
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
+    # Published ONLY on loopback, for tally-database-loader on this Windows PC.
+    # Needs the non-internal "dbhost" network, or Docker silently drops it.
+    ports: ["127.0.0.1:5432:5432"]
+    networks: [backend, dbhost]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tally"]
+      interval: 10s
+      retries: 10
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7.4.1-alpine}
+    restart: unless-stopped
+    # Cache + masking vault only: nothing persisted to disk, so no client data at rest here.
+    command: >
+      redis-server --requirepass ${REDIS_PASSWORD:?set in .env}
+      --save "" --appendonly no
+      --maxmemory 256mb --maxmemory-policy allkeys-lru
+    networks: [backend]
+    # Run as the image's redis user (uid 999) from the start: the entrypoint's
+    # chown + privilege drop needs capabilities we deliberately do not grant.
+    user: "999:1000"
+    read_only: true
+    tmpfs: [/data]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  ollama:
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.9.0}
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: 30m
+      OLLAMA_NUM_PARALLEL: "2"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+    volumes: [ollama:/root/.ollama]
+    networks: [backend]            # internal: the model cannot reach the internet
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # One-off: download the model weights into the shared volume.
+  #   docker compose --profile setup run --rm ollama-pull
+  ollama-pull:
+    profiles: [setup]
+    image: ${OLLAMA_IMAGE:-ollama/ollama:0.9.0}
+    entrypoint: ["/bin/sh", "-c", "ollama serve & sleep 5 && ollama pull ${OLLAMA_MODEL:-qwen3:14b}"]
+    volumes: [ollama:/root/.ollama]
+    networks: [egress]
+
+  agent:
+    build:
+      context: ..
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_started}
+    environment:
+      PG_DSN: postgresql://tally_ro:${RO_PASS}@postgres:5432/tally
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:14b}
+      LLM_ENABLED: ${LLM_ENABLED:-true}
+      LLM_NARRATE: ${LLM_NARRATE:-true}
+      USERS_FILE: /config/users.json
+      AUDIT_HASH_SALT: ${AUDIT_HASH_SALT:?set in .env}
+      SYNC_STALE_WARN_MINUTES: ${SYNC_STALE_WARN_MINUTES:-10}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-30}
+      REFERENCE_DATE: ${REFERENCE_DATE:-}
+      # Live Tally lookups need a route to the host, which the agent deliberately
+      # lacks (both its networks are internal). Leave empty unless you add one.
+      TALLY_LIVE_URL: ${TALLY_LIVE_URL:-}
+    volumes:
+      - ../config/users.json:/config/users.json:ro
+    networks: [backend, frontend]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2.8.4-alpine}
+    restart: unless-stopped
+    depends_on: [agent]
+    environment:
+      AGENT_HOSTNAME: ${AGENT_HOSTNAME:?set AGENT_HOSTNAME in .env to the Tailscale IP}
+      ALLOWED_CIDRS: ${ALLOWED_CIDRS:-100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1/8}
+    # Bind to the Tailscale address only (tailscale ip -4). Never 0.0.0.0.
+    ports: ["${CADDY_BIND_IP:?set CADDY_BIND_IP to this machine's Tailscale IP}:443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [frontend, edge]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  pgdata:
+  ollama:
+  caddy_data:
+  caddy_config:
+
+networks:
+  backend:
+    internal: true
+  frontend:
+    internal: true
+  edge:
+  dbhost:
+  egress:

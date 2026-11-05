@@ -1,0 +1,22 @@
+{
+  "database": {
+    "technology": "postgres",
+    "server": "localhost",
+    "port": 5432,
+    "ssl": false,
+    "schema": "tally",
+    "username": "loader_c1",
+    "password": "PASTE_FROM_add-company.ps1",
+    "loadmethod": "insert"
+  },
+  "tally": {
+    "definition": "tally-export-config-incremental.yaml",
+    "server": "localhost",
+    "port": 9000,
+    "fromdate": "auto",
+    "todate": "auto",
+    "sync": "incremental",
+    "frequency": 0,
+    "company": "White Design Consultants"
+  }
+}

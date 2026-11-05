@@ -118,7 +118,12 @@
   /* Summary Text area */
   #summary-section { background:var(--ink); border-radius:var(--radius-lg); padding:28px; margin-bottom:20px; color:#fff; }
   .summary-title { font-size:11px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; color:var(--teal); margin-bottom:16px; }
-  #summary-text { font-family:var(--mono); font-size:13px; line-height:1.8; color:#c8d0e8; white-space:pre-wrap; min-height:80px; }
+  #summary-text { font-family:var(--mono); font-size:13px; line-height:1.8; color:#c8d0e8; white-space:pre-wrap; overflow-wrap:anywhere; min-height:80px; }
+  .retry-btn { flex-shrink:0; font-size:11px; padding:3px 10px; border-radius:6px; border:1px solid var(--danger); background:transparent; color:var(--danger); cursor:pointer; }
+  #thank-you-summary { text-align:left; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; max-height:40vh; overflow:auto; user-select:text; -webkit-user-select:text; }
+  .photo-lock { font-size:12px; color:var(--ink-soft); margin:0 0 6px; }
+  #submit-error { display:none; margin:12px 0; padding:12px 14px; border-radius:10px; border:1px solid var(--danger); color:var(--danger); background:rgba(220,38,38,.06); font-size:14px; }
+  #submit-error button { margin-top:8px; padding:8px 18px; border-radius:8px; border:0; background:var(--danger); color:#fff; font-weight:600; cursor:pointer; }
   .summary-placeholder { color:#4a4e6a; font-style:italic; }
 
   /* Dynamic copy button */
@@ -189,7 +194,8 @@
   <div class="thank-you-card">
     <div class="thank-you-icon">✅</div>
     <h1>Submitted!</h1>
-    <p>The summary was copied and WhatsApp was opened. You can paste the report into your group now. You may close this tab.</p>
+    <p id="thank-you-text">The report was saved, the summary was copied and WhatsApp was opened. You can paste the report into your group now. You may close this tab.</p>
+    <pre id="thank-you-summary" hidden></pre>
   </div>
 </div>
 
@@ -403,6 +409,7 @@
       <div id="summary-text"><span class="summary-placeholder">Fill out standard inputs to view live output report...</span></div>
     </div>
 
+    <div id="submit-error" role="alert"><span id="submit-error-text"></span><br><button type="button" id="submit-retry">Retry</button></div>
     <button id="copy-btn" disabled onclick="submitForm()">
       <span id="copy-icon">📋</span>
       <span id="copy-label">Copy & Open WhatsApp</span>
@@ -412,22 +419,32 @@
   </div>
 </div>
 
+<script src="audit-common.js?v=2"></script>
 <script>
+"use strict";
 /* ═══════════════════════════════════════════════
-   CONFIGURATION 
+   CONFIGURATION
 ═══════════════════════════════════════════════ */
-const ACCESS_PIN = "1234";
+// The PIN is not written here (anything in this file is public). Auditors type
+// it; it is sent to n8n as the X-Audit-Key header and n8n checks it.
+const PIN_LENGTH = 6;
+// If photo uploads fail with a CORS error after enabling this, set to true
+// (the PIN is then sent inside the request instead of as a header).
+const AUTH_IN_BODY = false;
+AuditCommon.setAuthInBody(AUTH_IN_BODY);
 
+// NOTE: Form 2 posts to the SAME webhooks as Form 1. The n8n workflow must route
+// on payload.formType ("Form2_OnStoreSealing") / on fieldId for photos. If you
+// create separate form2 webhooks in n8n, change these two lines.
 const PHOTO_UPLOAD_WEBHOOK_URL = "https://n8n.tail61f871.ts.net/webhook/form1-photo-upload";
 const FORM_SUBMIT_WEBHOOK_URL  = "https://n8n.tail61f871.ts.net/webhook/form1-submit";
-
-const FORM3_URL = "https://formsforaudit.netlify.app/form3_placeholder"; // ← Sample/placeholder link — swap in real Form 3 URL once built
 
 const TEAM_NAMES = {
   teamA: "Team A", teamB: "Team B", teamC: "Team C", teamD: "Team D", teamE: "Team E",
   teamF: "Team F", teamG: "Team G", teamH: "Team H", teamI: "Team I", teamJ: "Team J",
 };
 
+// Visible to anyone who opens the page: the phone check is a convenience, not security.
 const TL_DATABASE = {
   teamA: { phone:"9876543210", email:"ravi.sharma@audit.com",  waLink:"https://chat.whatsapp.com/BcdmsGxBhma3F0OHqjTlt4" },
   teamB: { phone:"9123456780", email:"priya.mehta@audit.com",  waLink:"https://chat.whatsapp.com/JOJpmE6BN5FLFoEWb4vMOR" },
@@ -441,7 +458,7 @@ const TL_DATABASE = {
   teamJ: { phone:"9109876500", email:"kavita.bose@audit.com",  waLink:"https://chat.whatsapp.com/JOJpmE6BN5FLFoEWb4vMOR" },
 };
 
-/* Populate Dropdown Matrix */
+/* Populate dropdown */
 (function initDropdown(){
   const sel = document.getElementById("tl-name");
   Object.entries(TEAM_NAMES).forEach(([key, value]) => {
@@ -452,21 +469,46 @@ const TL_DATABASE = {
 })();
 
 /* ═══════════════════════════════════════════════
-   PIN ENGINE
+   LINK FROM FORM 1: ?audit=…&team=…&store=…
+═══════════════════════════════════════════════ */
+const params = new URLSearchParams(location.search);
+const AUDIT_ID = AuditCommon.valid.auditId(params.get("audit") || "") ? params.get("audit") : AuditCommon.auditId();
+const LINKED_FROM_FORM1 = AUDIT_ID === params.get("audit");
+(function prefill(){
+  const team = params.get("team");
+  if(team && Object.prototype.hasOwnProperty.call(TEAM_NAMES, team)) document.getElementById("tl-name").value = team;
+  const store = (params.get("store") || "").trim();
+  if(store && AuditCommon.valid.storeCode(store)) document.getElementById("store-code").value = store;
+  // Sealing happens today or recently: no future dates.
+  const d = document.getElementById("sealing-date");
+  d.max = AuditCommon.todayYmd();
+  if(!d.value) d.value = AuditCommon.todayYmd();
+})();
+
+/* ═══════════════════════════════════════════════
+   PIN  (sent to the server; not checked here)
 ═══════════════════════════════════════════════ */
 let pinBuffer = "";
-function pinPress(d){ if(pinBuffer.length>=4)return; pinBuffer+=d; updateDots(); if(pinBuffer.length===4)checkPin(); }
+(function buildDots(){
+  const box = document.querySelector(".pin-dots");
+  box.replaceChildren();
+  for(let i=0;i<PIN_LENGTH;i++){ const d=document.createElement("div"); d.className="pin-dot"; d.id=`dot-${i}`; box.appendChild(d); }
+  const hint = document.querySelector("#pin-gate .pin-card > p");
+  if(hint) hint.textContent = `Enter your ${PIN_LENGTH}-digit PIN to access Form 2`;
+})();
+function pinPress(d){ if(pinBuffer.length>=PIN_LENGTH)return; pinBuffer+=d; updateDots(); if(pinBuffer.length===PIN_LENGTH)checkPin(); }
 function pinDel(){ pinBuffer=pinBuffer.slice(0,-1); updateDots(); document.getElementById("pin-error").textContent=""; }
-function updateDots(){ for(let i=0;i<4;i++) document.getElementById(`dot-${i}`).classList.toggle("filled",i<pinBuffer.length); }
+function updateDots(){ for(let i=0;i<PIN_LENGTH;i++) document.getElementById(`dot-${i}`).classList.toggle("filled",i<pinBuffer.length); }
 function checkPin(){
-  if(pinBuffer===ACCESS_PIN){
-    document.getElementById("pin-gate").style.display="none";
-    document.getElementById("form-wrapper").style.display="block";
-  } else {
-    document.getElementById("pin-error").textContent="Incorrect PIN. Access Denied.";
-    setTimeout(()=>{ pinBuffer=""; updateDots(); },600);
-  }
+  AuditCommon.setAccessKey(pinBuffer);
+  pinBuffer=""; updateDots();
+  document.getElementById("pin-gate").style.display="none";
+  document.getElementById("form-wrapper").style.display="block";
 }
+AuditCommon.onAuthRejected(()=>{
+  document.getElementById("pin-error").textContent="That PIN was not accepted. Please enter it again.";
+  document.getElementById("pin-gate").style.display="";
+});
 document.addEventListener("keydown",(e)=>{
   if(!document.getElementById("pin-gate").offsetParent)return;
   if(e.key>="0"&&e.key<="9") pinPress(e.key);
@@ -481,102 +523,73 @@ function getFinancialYear(d){
   return m >= 3 ? `${y}-${String(y+1).slice(-2)}` : `${y-1}-${String(y).slice(-2)}`;
 }
 function getMonthName(d){ return d.toLocaleDateString("en-IN",{month:"long"}); }
-function sanitizeName(s){ return s.trim().split(/\s+/).map(w=>w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(""); }
+function sanitizeName(s){ return s.trim().split(/\s+/).map(w=>w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join("").replace(/[^A-Za-z0-9]/g,""); }
 function formatDate(d){ return d.toLocaleDateString("en-IN",{day:"2-digit",month:"long",year:"numeric"}).replace(/ /g,""); }
+function teamKey(){ return document.getElementById("tl-name").value; }
+function teamName(){ return TEAM_NAMES[teamKey()] || ""; }
 
 function buildFileName(fieldLabel, idx, ext, date){
-  const tl = sanitizeName(document.getElementById("tl-name").value);
+  const tl = sanitizeName(teamName());
   const code = document.getElementById("store-code").value.trim().replace(/[^a-zA-Z0-9]/g,"");
-  const dStr = formatDate(date);
   const sfx = idx > 0 ? `_${idx+1}` : "";
-  return `${tl}_${dStr}_${code}_${fieldLabel}${sfx}.${ext}`;
+  return `${tl}_${formatDate(date)}_${code}_${fieldLabel}${sfx}.${ext}`;
 }
-
-/* ═══════════════════════════════════════════════
-   UPLOADS MANAGEMENT
-═══════════════════════════════════════════════ */
-let uploadedLinks = { "gc-photo": [], "seal-sign-photo": [], "store-seal-photo": [], "billing-photos": [] };
-
-async function uploadFileToDrive(file, fileName, meta){
-  const form = new FormData();
-  form.append("file", file, fileName);
-  form.append("fileName", fileName);
-  form.append("fieldId", meta.fieldId);
-  form.append("teamLeaderName", meta.tlName);
-  form.append("storeCode", meta.storeCode);
-  form.append("financialYear", meta.fy);
-  form.append("month", meta.month);
-
-  const res = await fetch(PHOTO_UPLOAD_WEBHOOK_URL, { method:"POST", body:form });
-  if(!res.ok) throw new Error(`Status: ${res.status}`);
-  const data = await res.json();
-  return { id:data.fileId, name:fileName, link:data.link };
-}
-
-async function handlePhotoSelect(input, previewId, statusId){
-  const fieldId = input.id;
-  const files = Array.from(input.files||[]);
-  const preview = document.getElementById(previewId);
-  preview.innerHTML="";
-  
-  files.forEach(f=>{
-    const img=document.createElement("img");
-    img.src=URL.createObjectURL(f);
-    preview.appendChild(img);
-  });
-
-  uploadedLinks[fieldId]=[];
-  document.getElementById(statusId).innerHTML="";
-  if(files.length===0){ updateCopyBtn(); updateSummary(); return; }
-
-  const statusItems = files.map(f=>({name:f.name, status:"uploading", link:null}));
-  renderUploadStatus(statusId, statusItems);
-
+function buildUploadMeta(fieldId){
   const now = new Date();
-  for(let i=0;i<files.length;i++){
-    const file = files[i];
-    const ext = file.name.split(".").pop() || "jpg";
-    const fname = buildFileName(fieldId.replace(/-/g,"_"), i, ext, now);
-    try{
-      const uploaded = await uploadFileToDrive(file, fname, {
-        fieldId, tlName: document.getElementById("tl-name").value,
-        storeCode: document.getElementById("store-code").value.trim(),
-        fy: getFinancialYear(now), month: getMonthName(now)
-      });
-      uploadedLinks[fieldId].push({ name:fname, link:uploaded.link });
-      statusItems[i] = { name:fname, status:"done", link:uploaded.link };
-    } catch(e){
-      statusItems[i] = { name:fname, status:"err", link:null };
-      console.error(e);
-    }
-    renderUploadStatus(statusId, statusItems);
-    updateSummary();
-  }
-}
-
-function renderUploadStatus(sid, items){
-  document.getElementById(sid).innerHTML=items.map(item=>`
-    <div class="upload-item">
-      <span class="uname">${item.name}</span>
-      <span class="ustatus ${item.status}">${item.status==="uploading"?"Uploading…":item.status==="done"?"✅ Saved":"❌ Failed"}</span>
-      ${item.link?`<a href="${item.link}" target="_blank">View</a>`:""}
-    </div>`).join("");
+  return { fieldId, teamLeaderName: teamName(), teamKey: teamKey(),
+           storeCode: document.getElementById("store-code").value.trim(),
+           financialYear: getFinancialYear(now), month: getMonthName(now), auditId: AUDIT_ID };
 }
 
 /* ═══════════════════════════════════════════════
-   LOOKUP MATRIX VALIDATION
+   PHOTO FIELDS (audit-common.js)
+═══════════════════════════════════════════════ */
+const PHOTO_FIELDS = {
+  "gc-photo":         { previewId:"gc-photo-preview",   statusId:"gc-photo-status" },
+  "seal-sign-photo":  { previewId:"seal-sign-preview",  statusId:"seal-sign-status" },
+  "store-seal-photo": { previewId:"store-seal-preview", statusId:"store-seal-status" },
+  "billing-photos":   { previewId:"billing-preview",    statusId:"billing-status" },
+};
+const photos = {};
+Object.entries(PHOTO_FIELDS).forEach(([id, f])=>{
+  photos[id] = AuditCommon.createPhotoField({
+    inputId:id, previewId:f.previewId, statusId:f.statusId, label:id.replace(/-/g,"_"),
+    url:PHOTO_UPLOAD_WEBHOOK_URL, buildName:buildFileName, buildMeta:()=>buildUploadMeta(id),
+    onChange:updateSummary,
+  });
+});
+function handlePhotoSelect(input){ photos[input.id].select(input.files); }
+
+function identityReady(){ return tlMatchConfirmed && AuditCommon.valid.storeCode(document.getElementById("store-code").value.trim()); }
+(function addPhotoLocks(){
+  Object.keys(PHOTO_FIELDS).forEach(id=>{
+    const p=document.createElement("p"); p.className="photo-lock"; p.id=`${id}-lock`;
+    p.textContent="Select team leader, enter the matching phone and the store code first.";
+    document.getElementById(id).insertAdjacentElement("beforebegin", p);
+  });
+})();
+function updatePhotoLocks(){
+  const ok=identityReady();
+  Object.keys(PHOTO_FIELDS).forEach(id=>{
+    document.getElementById(id).disabled=!ok;
+    document.getElementById(`${id}-lock`).style.display= ok ? "none" : "block";
+  });
+}
+
+/* ═══════════════════════════════════════════════
+   TL LOOKUP
 ═══════════════════════════════════════════════ */
 let tlMatchConfirmed = false;
+let submitting = false;
 
 function onLookupChange(){
-  const key = document.getElementById("tl-name").value;
+  const key = teamKey();
   const phone = document.getElementById("tl-phone").value.trim();
   const waFld = document.getElementById("wa-link");
   const warn = document.getElementById("mismatch-warning");
   const rec = TL_DATABASE[key];
 
-  if(!key || !phone){ waFld.value=""; warn.style.display="none"; tlMatchConfirmed=false; updateSummary(); updateCopyBtn(); return; }
-
+  if(!key || !phone){ waFld.value=""; warn.style.display="none"; tlMatchConfirmed=false; updateSummary(); return; }
   if(rec && rec.phone===phone){
     waFld.value=rec.waLink; waFld.classList.add("autofilled");
     warn.style.display="none"; tlMatchConfirmed=true;
@@ -584,11 +597,11 @@ function onLookupChange(){
     waFld.value=""; waFld.classList.remove("autofilled");
     warn.style.display="flex"; tlMatchConfirmed=false;
   }
-  updateSummary(); updateCopyBtn();
+  updateSummary();
 }
 
 /* ═══════════════════════════════════════════════
-   VALIDATION LOGIC
+   REQUIRED FIELDS & FORMAT CHECKS
 ═══════════════════════════════════════════════ */
 const REQUIRED_IDS = [
   "tl-name","tl-phone","store-code",
@@ -599,59 +612,83 @@ const REQUIRED_IDS = [
   "team-size", "next-open-time", "missing-docs-link",
   "dec-1", "dec-2", "tl-verification"
 ];
-
+function sealingDateOk(v){
+  const d = AuditCommon.parseYmd(v); if(!d) return false;
+  const today = AuditCommon.parseYmd(AuditCommon.todayYmd());
+  const days = (today - d) / 86400000;
+  return days >= 0 && days <= 30;
+}
+const FORMAT_CHECKS = {
+  "tl-phone":     [AuditCommon.valid.mobile, "TL phone (10 digits)"],
+  "store-code":   [AuditCommon.valid.storeCode, "store code (letters, digits, -)"],
+  "sealing-date": [sealingDateOk, "sealing date (today or up to 30 days ago)"],
+  "team-size":    [v=>/^\d{1,3}$/.test(v) && +v >= 1, "team size (1 or more)"],
+};
 function isFieldFilled(id){
+  if(photos[id]) return photos[id].done();
   const el = document.getElementById(id);
   if(!el) return false;
   if(el.type === "checkbox") return el.checked;
-  if(el.type === "file") return el.files && el.files.length > 0 && uploadedLinks[id] && uploadedLinks[id].length === el.files.length;
   return el.value.trim() !== "";
+}
+function badFormats(){
+  return Object.entries(FORMAT_CHECKS)
+    .filter(([id,[ok]])=>{ const v=document.getElementById(id).value.trim(); return v!=="" && !ok(v); })
+    .map(([,[,label]])=>label);
 }
 
 function updateCopyBtn(){
   const btn = document.getElementById("copy-btn");
   const hint = document.getElementById("btn-hint");
   const allFilled = REQUIRED_IDS.every(isFieldFilled);
-  const ready = tlMatchConfirmed && allFilled;
-  
-  btn.disabled = !ready;
+  const bad = badFormats();
+  btn.disabled = !(tlMatchConfirmed && allFilled && bad.length===0 && !submitting);
+  updatePhotoLocks();
   const filledCount = REQUIRED_IDS.filter(isFieldFilled).length;
-  const pct = (filledCount / REQUIRED_IDS.length) * 100;
-  document.getElementById("progress-fill").style.width = pct + "%";
+  document.getElementById("progress-fill").style.width = (filledCount / REQUIRED_IDS.length) * 100 + "%";
 
-  if(!tlMatchConfirmed && document.getElementById("tl-name").value && document.getElementById("tl-phone").value){
-    hint.textContent = "Resolve matching parameter conflict before proceeding.";
+  const failed = Object.values(photos).some(p=>p.failed());
+  const uploading = Object.values(photos).some(p=>p.uploading());
+  if(!tlMatchConfirmed && teamKey() && document.getElementById("tl-phone").value){
+    hint.textContent = "Fix the name/phone mismatch to continue.";
+  } else if(bad.length){
+    hint.textContent = "Please check: " + bad.join(", ");
+  } else if(failed){
+    hint.textContent = "A photo failed to upload — tap Retry next to it.";
+  } else if(uploading){
+    hint.textContent = "Photos are uploading…";
   } else if(!allFilled){
-    hint.textContent = `${REQUIRED_IDS.length - filledCount} fields remaining or active file uploads context processing.`;
+    const rem = REQUIRED_IDS.length - filledCount;
+    hint.textContent = `${rem} required field${rem!==1?"s":""} remaining.`;
   } else {
-    hint.textContent = "Form verified. Tap to complete copy operation & dispatch data.";
+    hint.textContent = "All good — tap to copy & open WhatsApp.";
   }
 }
 
 /* ═══════════════════════════════════════════════
-   LIVE REPORT GENERATION
+   LIVE REPORT
 ═══════════════════════════════════════════════ */
 function fv(id){
   const el = document.getElementById(id);
   if(!el) return "—";
+  if(id === "tl-name") return teamName() || "—";
   if(el.type === "checkbox") return el.checked ? "CONFIRMED" : "PENDING";
   return el.value.trim() || "—";
 }
-
-function parsePhotoLines(id, title){
-  const files = uploadedLinks[id] || [];
-  if(files.length === 0) return `${title}: —`;
+function photoLines(id, title){
+  const p = photos[id], files = p.links();
+  if(files.length === 0) return `${title}: ${p.count()>0 ? `${p.count()} photo(s) uploading` : "—"}`;
   let s = `${title}:\n`;
   files.forEach((f,i)=> { s += `  ${i+1}. ${f.name}\n     ${f.link}\n`; });
   return s.trim();
 }
-
 function buildSummary(){
-  const dStr = document.getElementById("sealing-date").value ? formatDate(new Date(document.getElementById("sealing-date").value)) : "—";
+  const d = AuditCommon.parseYmd(document.getElementById("sealing-date").value);
   return [
     `📋 *STORE AUDIT REPORT – ON STORE SEALING*`,
-    `🗓️ Date of Execution: ${dStr}`,
+    `🗓️ Date of Execution: ${d ? formatDate(d) : "—"}`,
     `🏪 Store Code       : ${fv("store-code")}`,
+    `🆔 Audit ID         : ${AUDIT_ID}${LINKED_FROM_FORM1 ? "" : " (not linked to a Form 1)"}`,
     ``,
     `👤 *AUDITOR VERIFICATION*`,
     `Team Leader        : ${fv("tl-name")}`,
@@ -673,57 +710,36 @@ function buildSummary(){
     `External Cloud Link: ${fv("missing-docs-link")}`,
     ``,
     `📸 *PHOTOGRAPHIC VERIFICATION LOG*`,
-    parsePhotoLines("gc-photo", "GC Sign-off Photo"),
-    parsePhotoLines("seal-sign-photo", "Signature Sealing Photo"),
-    parsePhotoLines("store-seal-photo", "Store Seal Placement Photo"),
-    parsePhotoLines("billing-photos", "Billing Documentation Photo"),
+    photoLines("gc-photo", "GC Sign-off Photo"),
+    photoLines("seal-sign-photo", "Signature Sealing Photo"),
+    photoLines("store-seal-photo", "Store Seal Placement Photo"),
+    photoLines("billing-photos", "Billing Documentation Photo"),
     ``,
     `⚖️ *COMPLIANCE DECLARATIONS*`,
     `GC Mismatch Dec    : ${fv("dec-1")}`,
     `Stock Boundary Dec : ${fv("dec-2")}`,
     `Final TL Validation: ${fv("tl-verification")}`,
-    ``,
-    `📝 *NEXT STEP*`,
-    `Form 3: ${FORM3_URL}`,
   ].join("\n");
 }
-
 function updateSummary(){
   document.getElementById("summary-text").textContent = buildSummary();
   updateCopyBtn();
 }
 
 /* ═══════════════════════════════════════════════
-   SUBMIT EXECUTION
+   SUBMIT — saved first, "Submitted" only on success
 ═══════════════════════════════════════════════ */
-async function submitForm(){
-  if(document.getElementById("copy-btn").disabled) return;
-  const summaryText = buildSummary();
-
-  // Clipboard Injection
-  try { await navigator.clipboard.writeText(summaryText); }
-  catch(e){
-    const ta = document.createElement("textarea"); ta.value = summaryText;
-    document.body.appendChild(ta); ta.select(); document.execCommand("copy");
-    document.body.removeChild(ta);
-  }
-
-  // Open WhatsApp Matrix
-  const wa = document.getElementById("wa-link").value.trim();
-  if(wa.startsWith("https://")) window.open(wa, "_blank");
-
-  // UI Button Notification Effect
-  const btn = document.getElementById("copy-btn");
-  btn.classList.add("success");
-  document.getElementById("copy-icon").textContent="✅";
-  document.getElementById("copy-label").textContent="Copied! WhatsApp opened ✓";
-  
-  // Non-blocking JSON Pipeline Dispatch
-  const payload = {
+function buildPayload(summaryText){
+  const photoLinks = {};
+  Object.keys(photos).forEach(id=>{ photoLinks[id]=photos[id].links(); });
+  return {
     timestamp: new Date().toISOString(),
-    teamLeaderName: document.getElementById("tl-name").value,
+    auditId: AUDIT_ID,
+    linkedFromForm1: LINKED_FROM_FORM1,
+    teamKey: teamKey(),
+    teamLeaderName: teamName(),
     teamLeaderPhone: document.getElementById("tl-phone").value.trim(),
-    whatsappGroup: wa,
+    whatsappGroup: document.getElementById("wa-link").value.trim(),
     storeCode: document.getElementById("store-code").value.trim(),
     unsealedReason: document.getElementById("unsealed-reason").value,
     sealingDate: document.getElementById("sealing-date").value,
@@ -738,32 +754,58 @@ async function submitForm(){
     declarationGCMismatch: document.getElementById("dec-1").checked,
     declarationStockBoundary: document.getElementById("dec-2").checked,
     finalTlVerificationState: document.getElementById("tl-verification").value,
-    photoLinks: uploadedLinks,
-    summaryText: summaryText,
+    photoLinks,
+    summaryText,
     formType: "Form2_OnStoreSealing"
   };
-
-  fetch(FORM_SUBMIT_WEBHOOK_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload) }).catch(()=>{});
-
-  setTimeout(()=>{
-    btn.classList.remove("success");
-    document.getElementById("copy-icon").textContent="📋";
-    document.getElementById("copy-label").textContent="Copy & Open WhatsApp";
-  }, 5000);
-
-  // ── Close the form: hide it and show the thank-you screen ──
-  document.getElementById("form-wrapper").style.display="none";
-  document.getElementById("thank-you-screen").style.display="flex";
 }
 
-/* Attach Monitoring Event Loops */
+function submitForm(){
+  if(document.getElementById("copy-btn").disabled || submitting) return;
+  const summaryText = buildSummary();
+  const copied = AuditCommon.copyAndOpen(summaryText, document.getElementById("wa-link").value.trim());
+  sendReport(buildPayload(summaryText), copied);
+}
+
+async function sendReport(payload, copied){
+  submitting = true; updateCopyBtn();
+  const banner = document.getElementById("submit-error");
+  banner.style.display="none";
+  const overlay = document.getElementById("submit-overlay");
+  overlay.classList.add("active");
+  const copyOk = await copied;
+  try{
+    await AuditCommon.submitJson(FORM_SUBMIT_WEBHOOK_URL, payload);
+    overlay.classList.remove("active");
+    document.getElementById("thank-you-text").textContent = copyOk
+      ? "The report was saved, the summary was copied and WhatsApp was opened. Paste the report into your group now. You may close this tab."
+      : "The report was saved and WhatsApp was opened, but the summary could not be copied automatically. Long-press the text below, copy it, and paste it into your WhatsApp group.";
+    const pre = document.getElementById("thank-you-summary");
+    pre.textContent = payload.summaryText;
+    pre.hidden = copyOk;
+    document.getElementById("form-wrapper").style.display="none";
+    document.getElementById("thank-you-screen").style.display="flex";
+  } catch(e){
+    overlay.classList.remove("active");
+    submitting = false; updateCopyBtn();
+    document.getElementById("submit-error-text").textContent =
+      e instanceof AuditCommon.AuthRejected
+        ? "The PIN was not accepted, so the report was NOT saved. Enter the PIN again, then tap Retry."
+        : "The report was NOT saved (no connection or the server did not answer). Your answers are still here — tap Retry.";
+    banner.style.display="block";
+    banner.scrollIntoView({behavior:"smooth", block:"center"});
+    document.getElementById("submit-retry").onclick = ()=> sendReport(payload, Promise.resolve(copyOk));
+  }
+}
+
+/* Attach listeners */
 REQUIRED_IDS.forEach(id => {
   const el = document.getElementById(id);
   if(!el || el.type === "file") return;
   el.addEventListener("input", updateSummary);
   el.addEventListener("change", updateSummary);
 });
-
+if(document.getElementById("tl-name").value) onLookupChange();
 updateSummary();
 </script>
 </body>

@@ -1,0 +1,15 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+data/
+*.log
+config/users.json
+deploy/.env
+backups/
+loader/
+sync/logs/
+sync/companies.json

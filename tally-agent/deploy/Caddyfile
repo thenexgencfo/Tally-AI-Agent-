@@ -1,0 +1,43 @@
+# Reverse proxy for the Tally Agent. Reachable only on the Tailscale address
+# (see CADDY_BIND_IP in docker-compose.yml).
+{
+	admin off
+	# Browsers send no server name when given a bare IP, and inside Docker the
+	# address Caddy is reached on is the container's, not the Tailscale IP. This
+	# tells Caddy which certificate to present in that case.
+	default_sni {$AGENT_HOSTNAME}
+}
+
+{$AGENT_HOSTNAME} {
+	# Internal CA: install its root certificate on staff devices once
+	# (SETUP-WINDOWS.md, step D5). Use the Tailscale IP as AGENT_HOSTNAME;
+	# a *.ts.net name makes Caddy ask Tailscale for the certificate, which it
+	# cannot reach from inside Docker.
+	tls internal
+
+	# Second fence behind the bind address: tailnet and loopback only.
+	# Docker Desktop may rewrite source addresses -- check what Caddy logs as
+	# remote_ip on first start and adjust ALLOWED_CIDRS if needed.
+	@outside not remote_ip {$ALLOWED_CIDRS}
+	respond @outside "Forbidden" 403
+
+	request_body {
+		max_size 64KB
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+
+	reverse_proxy agent:8080 {
+		header_up X-Forwarded-For {remote_host}
+	}
+
+	# Access log: method, path, status, timing. Request bodies (questions)
+	# are never logged here; the agent's own audit trail is the record.
+	log {
+		output stdout
+		format json
+	}
+}

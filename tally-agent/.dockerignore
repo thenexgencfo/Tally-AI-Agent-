@@ -1,0 +1,14 @@
+.venv
+venv
+.git
+.pytest_cache
+__pycache__
+**/*.pyc
+.env
+config/users.json
+backups
+tests
+docs
+sync
+n8n
+deploy
