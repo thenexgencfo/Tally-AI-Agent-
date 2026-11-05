@@ -2,7 +2,7 @@
   {
     "company_id": 1,
     "name": "White Design Consultants",
-    "loader_dir": "C:\\tally-agent\\loader\\c1",
+    "loader_dir": "C:\\TallyAI\\tally-agent\\loader\\c1",
     "fy_from": "2024-04-01",
     "fy_to": "2025-03-31"
   }

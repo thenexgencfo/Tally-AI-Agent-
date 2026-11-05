@@ -10,7 +10,7 @@
   snapshot stays in place and every answer shows the staleness warning.
 
   Register as a Scheduled Task, "At log on" of the account that runs Docker Desktop:
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\tally-agent\sync\run-sync.ps1
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\TallyAI\tally-agent\sync\run-sync.ps1
 
 .NOTES
   Reads Tally only through its XML port (via the loader). Never touches Tally's data folder.
