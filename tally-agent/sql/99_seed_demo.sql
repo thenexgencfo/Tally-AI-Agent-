@@ -13,17 +13,23 @@ INSERT INTO mst_company (company_id, guid, name, it_pan, gstn, fy_from, fy_to, b
  (1, 'cmp-0001', 'White Design Consultants', 'AAACW1234F', '27AAACW1234F1Z5', '2024-04-01', '2025-03-31', '2024-04-01'),
  (2, 'cmp-0002', 'Nexgen Traders Pvt Ltd',   'AAACN5678G', '29AAACN5678G1Z2', '2024-04-01', '2025-03-31', '2024-04-01');
 
+-- Group tree exactly as the loader exports it from Tally: parent '' for primary
+-- groups, and primary_group = the TOP-level group (Tally's _PrimaryGroup), so
+-- Sundry Debtors sits under Current Assets.
 INSERT INTO mst_group (company_id, guid, name, parent, primary_group, is_revenue, is_deemedpositive) VALUES
- (1,'g1-01','Sundry Debtors','Current Assets','Sundry Debtors',0,1),
- (1,'g1-02','Sundry Creditors','Current Liabilities','Sundry Creditors',0,0),
- (1,'g1-03','Bank Accounts','Current Assets','Bank Accounts',0,1),
- (1,'g1-04','Cash-in-Hand','Current Assets','Cash-in-Hand',0,1),
- (1,'g1-05','Duties & Taxes','Current Liabilities','Duties & Taxes',0,0),
- (1,'g1-06','Sales Accounts','Income','Sales Accounts',1,0),
- (1,'g1-07','Indirect Expenses','Expenses','Indirect Expenses',1,1),
- (1,'g1-08','Capital Account','Capital Account','Capital Account',0,0),
- (2,'g2-01','Sundry Debtors','Current Assets','Sundry Debtors',0,1),
- (2,'g2-02','Capital Account','Capital Account','Capital Account',0,0);
+ (1,'g1-00a','Current Assets','','Current Assets',0,1),
+ (1,'g1-00b','Current Liabilities','','Current Liabilities',0,0),
+ (1,'g1-01','Sundry Debtors','Current Assets','Current Assets',0,1),
+ (1,'g1-02','Sundry Creditors','Current Liabilities','Current Liabilities',0,0),
+ (1,'g1-03','Bank Accounts','Current Assets','Current Assets',0,1),
+ (1,'g1-04','Cash-in-Hand','Current Assets','Current Assets',0,1),
+ (1,'g1-05','Duties & Taxes','Current Liabilities','Current Liabilities',0,0),
+ (1,'g1-06','Sales Accounts','','Sales Accounts',1,0),
+ (1,'g1-07','Indirect Expenses','','Indirect Expenses',1,1),
+ (1,'g1-08','Capital Account','','Capital Account',0,0),
+ (2,'g2-00','Current Assets','','Current Assets',0,1),
+ (2,'g2-01','Sundry Debtors','Current Assets','Current Assets',0,1),
+ (2,'g2-02','Capital Account','','Capital Account',0,0);
 
 INSERT INTO mst_ledger (company_id, guid, name, parent, opening_balance, is_revenue,
                         email, phone, it_pan, gstn, mailing_state,
@@ -94,6 +100,10 @@ INSERT INTO trn_bill (company_id, guid, line_no, ledger, name, amount, billtype,
  (1,'v1-004',1,'Acme Interiors Pvt Ltd','SI-001',118000,'Agst Ref','2024-04-10'),
  (1,'v1-005',1,'Borealis Furnishings LLP','SI-002',100000,'Agst Ref','2024-05-15'),
  (1,'v1-006',1,'Deepak Stationers','PU-001',20000,'New Ref','2024-07-01');
+
+-- Acme's opening Rs 1,50,000 is an unpaid invoice from before the books began.
+INSERT INTO mst_opening_bill (company_id, line_no, ledger, name, bill_date, amount, is_advance) VALUES
+ (1, 1, 'Acme Interiors Pvt Ltd', 'OB-2023-17', '2024-02-15', -150000, 0);
 
 INSERT INTO sync_state (company_id, last_sync_at, last_alterid, last_status, rows_synced) VALUES
  (1, now() - interval '2 minutes', 9001, 'ok', 46),

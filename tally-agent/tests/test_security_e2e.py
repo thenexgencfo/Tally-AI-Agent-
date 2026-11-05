@@ -138,7 +138,7 @@ async def test_junior_sees_masked_names_senior_sees_real(redis_client):
     s = await svc.ask(user("senior"), "which invoices are overdue", 1)
     assert j.report_id == s.report_id == "bills_outstanding"
     assert "Borealis" not in json.dumps(j.rows) and "Borealis" in json.dumps(s.rows)
-    assert {r["party"] for r in j.rows} <= {"Party 1", "Party 2"}
+    assert all(str(r["party"]).startswith("Party ") for r in j.rows)
 
 
 async def test_audit_trail_holds_no_raw_identifiers(redis_client, owner_con):
@@ -207,3 +207,34 @@ async def test_live_lookup_used_when_asked(redis_client):
     svc.live = FakeLive()
     res = await svc.ask(user("partner"), "what does Acme owe right now", 1)
     assert res.live and "₹1,52,500.00 Dr" in res.answer
+
+
+async def test_reports_tab_denials_are_audited(redis_client, owner_con):
+    svc = make_service(redis_client, None)
+    before = await owner_con.fetchval("SELECT count(*) FROM audit.query_log WHERE outcome='denied'")
+    with pytest.raises(Denied):
+        await svc.run_direct(user("junior"), "party_details", 1, {"party": "Borealis"})
+    with pytest.raises(Denied):
+        await svc.run_direct(user("partner"), "trial_balance", 2, {"as_of": "2025-03-31"})
+    after = await owner_con.fetchval("SELECT count(*) FROM audit.query_log WHERE outcome='denied'")
+    assert after - before == 2
+
+
+async def test_failures_after_fetch_are_audited(redis_client, owner_con, monkeypatch):
+    import app.service as service_mod
+
+    def boom(*a, **k):
+        raise RuntimeError("summary bug")
+    monkeypatch.setattr(service_mod, "summarize", boom)
+    with pytest.raises(RuntimeError):
+        await make_service(redis_client, None).ask(user("partner"), "trial balance", 1)
+    row = await owner_con.fetchrow("SELECT outcome, error_detail FROM audit.query_log "
+                                   "WHERE user_id='partner.test' ORDER BY id DESC LIMIT 1")
+    assert (row["outcome"], row["error_detail"]) == ("error", "RuntimeError")
+
+
+async def test_company_name_never_reaches_model(redis_client):
+    llm = FakeLLM(plan=rules_router("partner"), narrative=echo_everything)
+    await make_service(redis_client, llm).ask(
+        user("partner"), "net profit of White Design Consultants for FY 2024-25", 1)
+    assert all("white design" not in (s + u).lower() for s, u in llm.prompts)

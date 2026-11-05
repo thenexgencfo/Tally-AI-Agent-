@@ -21,9 +21,63 @@ DECLARE
     total bigint := 0;
     c     bigint;
     s     text := p_schema;
+    t     text;
+    bad   text;
+    src   text[] := ARRAY['mst_group','mst_ledger','mst_vouchertype','mst_cost_centre',
+                          'mst_stock_item','trn_voucher','trn_accounting','trn_bill',
+                          'trn_cost_centre','trn_inventory'];
+    -- Present in current loader versions; skipped (with a NOTICE) if absent.
+    optional text[] := ARRAY['mst_opening_bill_allocation','trn_closingstock_ledger'];
+    have  text[];
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = s) THEN
         RAISE EXCEPTION 'loader schema "%" not found', s;
+    END IF;
+
+    -- SECURITY. The loader login owns this schema, so it could plant a view,
+    -- a function, a custom type or a child table there whose code would run
+    -- with THIS role's privileges the moment we read it. So, before reading:
+    --   1. lock every source table (ACCESS SHARE blocks DROP/ALTER, so it
+    --      cannot be swapped for a view between the check and the read);
+    --   2. accept only plain tables ('r'), with no inheritance children and no
+    --      row security, whose columns are all built-in pg_catalog base types.
+    -- Reading such a table executes no code owned by the loader.
+    FOREACH t IN ARRAY src LOOP
+        IF to_regclass(format('%I.%I', s, t)) IS NULL THEN
+            RAISE EXCEPTION 'loader table %.% not found', s, t;
+        END IF;
+    END LOOP;
+    have := ARRAY(SELECT o FROM unnest(optional) o WHERE to_regclass(format('%I.%I', s, o)) IS NOT NULL);
+    src := src || have;
+    FOREACH t IN ARRAY src LOOP
+        EXECUTE format('LOCK TABLE %I.%I IN ACCESS SHARE MODE', s, t);
+    END LOOP;
+
+    SELECT string_agg(format('%s (relkind %s%s%s)', c2.relname, c2.relkind,
+                             CASE WHEN c2.relrowsecurity THEN ', row security' ELSE '' END,
+                             CASE WHEN EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhparent = c2.oid)
+                                  THEN ', has child tables' ELSE '' END), ', ')
+      INTO bad
+      FROM pg_class c2 JOIN pg_namespace n ON n.oid = c2.relnamespace
+     WHERE n.nspname = s AND c2.relname = ANY (src)
+       AND (c2.relkind <> 'r' OR c2.relrowsecurity
+            OR EXISTS (SELECT 1 FROM pg_inherits i WHERE i.inhparent = c2.oid));
+    IF bad IS NOT NULL THEN
+        RAISE EXCEPTION 'refusing to ingest from "%": not plain tables: %', s, bad;
+    END IF;
+
+    SELECT string_agg(format('%s.%s (%s)', c2.relname, a.attname, format_type(a.atttypid, a.atttypmod)), ', ')
+      INTO bad
+      FROM pg_attribute a
+      JOIN pg_class c2     ON c2.oid = a.attrelid
+      JOIN pg_namespace n  ON n.oid = c2.relnamespace
+      JOIN pg_type ty      ON ty.oid = a.atttypid
+      JOIN pg_namespace tn ON tn.oid = ty.typnamespace
+     WHERE n.nspname = s AND c2.relname = ANY (src)
+       AND a.attnum > 0 AND NOT a.attisdropped
+       AND (tn.nspname <> 'pg_catalog' OR ty.typtype <> 'b');
+    IF bad IS NOT NULL THEN
+        RAISE EXCEPTION 'refusing to ingest from "%": non built-in column types: %', s, bad;
     END IF;
 
     INSERT INTO mst_company (company_id, guid, name, fy_from, fy_to)
@@ -34,6 +88,8 @@ BEGIN
            fy_to   = COALESCE(EXCLUDED.fy_to,   mst_company.fy_to);
 
     -- Replace this company's snapshot. Children first (FKs).
+    DELETE FROM mst_opening_bill WHERE company_id = p_company;
+    DELETE FROM trn_closingstock WHERE company_id = p_company;
     DELETE FROM trn_inventory   WHERE company_id = p_company;
     DELETE FROM trn_cost_centre WHERE company_id = p_company;
     DELETE FROM trn_bill        WHERE company_id = p_company;
@@ -92,8 +148,8 @@ BEGIN
         FROM %I.mst_stock_item $q$, p_company, s);
     GET DIAGNOSTICS c = ROW_COUNT; total := total + c;
 
-    -- loader: no is_cancelled / is_optional columns -> 0 (verify the loader's
-    -- export excludes cancelled and optional vouchers for your Tally release).
+    -- The loader's export already filters NOT $IsCancelled and NOT $IsOptional
+    -- (tally-export-config.yaml), so these flags are 0 by construction.
     EXECUTE format($q$
         INSERT INTO trn_voucher (company_id, guid, date, voucher_type, voucher_number,
                                  reference_number, reference_date, narration, party_name,
@@ -143,6 +199,27 @@ BEGIN
         WHERE guid IN (SELECT guid FROM tally.trn_voucher WHERE company_id = %s) $q$,
         p_company, s, p_company);
     GET DIAGNOSTICS c = ROW_COUNT; total := total + c;
+
+    IF 'mst_opening_bill_allocation' = ANY (have) THEN
+        EXECUTE format($q$
+            INSERT INTO mst_opening_bill (company_id, line_no, ledger, name, bill_date, amount, is_advance)
+            SELECT %s, row_number() OVER (ORDER BY ctid), COALESCE(ledger,''), COALESCE(name,''),
+                   bill_date, COALESCE(opening_balance,0), COALESCE(is_advance,0)
+            FROM %I.mst_opening_bill_allocation
+            WHERE COALESCE(opening_balance,0) <> 0 $q$, p_company, s);
+        GET DIAGNOSTICS c = ROW_COUNT; total := total + c;
+    ELSE
+        RAISE NOTICE 'loader schema % has no mst_opening_bill_allocation: opening bill dues not loaded', s;
+    END IF;
+
+    IF 'trn_closingstock_ledger' = ANY (have) THEN
+        EXECUTE format($q$
+            INSERT INTO trn_closingstock (company_id, line_no, ledger, stock_date, stock_value)
+            SELECT %s, row_number() OVER (ORDER BY ctid), COALESCE(ledger,''), stock_date,
+                   COALESCE(stock_value,0)
+            FROM %I.trn_closingstock_ledger WHERE stock_date IS NOT NULL $q$, p_company, s);
+        GET DIAGNOSTICS c = ROW_COUNT; total := total + c;
+    END IF;
 
     INSERT INTO sync_state (company_id, last_sync_at, last_status, last_error, rows_synced)
     VALUES (p_company, now(), 'ok', '', total)

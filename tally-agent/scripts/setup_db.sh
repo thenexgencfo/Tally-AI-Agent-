@@ -84,6 +84,9 @@ BEGIN
   FOR r IN SELECT c.relname, n.nspname FROM pg_class c
            JOIN pg_namespace n ON n.oid=c.relnamespace
            WHERE n.nspname IN ('tally','audit') AND c.relkind IN ('r','v','S')
+             -- sequences owned by a table column follow their table automatically
+             AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = c.oid
+                             AND d.classid = 'pg_class'::regclass AND d.deptype IN ('a','i'))
   LOOP EXECUTE format('ALTER TABLE %I.%I OWNER TO tally_owner', r.nspname, r.relname); END LOOP;
   FOR r IN SELECT p.proname, n.nspname,
                   pg_get_function_identity_arguments(p.oid) AS args

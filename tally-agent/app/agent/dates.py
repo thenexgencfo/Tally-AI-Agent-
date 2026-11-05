@@ -46,6 +46,7 @@ class Period:
     as_of: dt.date
     explicit: bool          # True if the question named a period
     label: str
+    warning: str | None = None
 
 
 _ISO = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
@@ -63,25 +64,28 @@ _IN_MONTH = re.compile(
 _FY = re.compile(r"\b(?:fy|f\.y\.|financial year|year)?\s*(20\d{2})\s*[-/–]\s*(\d{2}|20\d{2})\b")
 
 
-def _explicit_dates(text: str) -> list[dt.date]:
+def _explicit_dates(text: str, failed: list[str] | None = None) -> list[dt.date]:
     found: list[tuple[int, dt.date]] = []
     for m in _ISO.finditer(text):
         try:
             found.append((m.start(), dt.date(int(m[1]), int(m[2]), int(m[3]))))
         except ValueError:
-            pass
+            if failed is not None:
+                failed.append(m[0])
     for m in _DMY.finditer(text):
         try:
             found.append((m.start(), dparser.parse(m[0], dayfirst=True).date()))
         except (ValueError, OverflowError):
-            pass
+            if failed is not None:
+                failed.append(m[0])
     for m in _DAY_MONTH.finditer(text):
         if not m[3]:
             continue
         try:
             found.append((m.start(), dparser.parse(m[0], dayfirst=True).date()))
         except (ValueError, OverflowError):
-            pass
+            if failed is not None:
+                failed.append(m[0].strip())
     found.sort(key=lambda x: x[0])
     seen: list[dt.date] = []
     for _, d in found:
@@ -91,6 +95,16 @@ def _explicit_dates(text: str) -> list[dt.date]:
 
 
 def resolve_period(text: str, today: dt.date) -> Period:
+    failed: list[str] = []
+    p = _resolve(text, today, failed)
+    if failed and p.warning is None:
+        from dataclasses import replace
+        p = replace(p, warning=f"Could not read the date '{failed[0]}', so {p.label} was used "
+                               "instead. Please check the date.")
+    return p
+
+
+def _resolve(text: str, today: dt.date, failed: list[str]) -> Period:
     t = (text or "").lower()
     fy_from, fy_to = fy_bounds(today)
 
@@ -102,7 +116,7 @@ def resolve_period(text: str, today: dt.date) -> Period:
             s, e = dt.date(y1, 4, 1), dt.date(y2, 3, 31)
             return Period(s, e, e, True, f"FY {y1}-{str(y2)[2:]}")
 
-    dates = _explicit_dates(t)
+    dates = _explicit_dates(t, failed)
     if len(dates) >= 2:
         a, b = sorted(dates[:2])
         return Period(a, b, b, True, f"{a.isoformat()} to {b.isoformat()}")
@@ -140,8 +154,9 @@ def resolve_period(text: str, today: dt.date) -> Period:
         return Period(s, e, e, True, s.strftime("%B %Y"))
     m = _IN_MONTH.search(t)
     if m:
+        # The most recent such month that has started -- never a future one.
         month = MONTHS[m[1]]
-        year = fy_from.year if month >= 4 else fy_from.year + 1
+        year = today.year if month <= today.month else today.year - 1
         s, e = month_bounds(year, month)
         return Period(s, e, e, True, s.strftime("%B %Y"))
 

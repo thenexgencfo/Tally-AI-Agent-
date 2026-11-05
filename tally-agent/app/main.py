@@ -37,6 +37,7 @@ async def lifespan(app: FastAPI):
     app.state.llm = llm
     app.state.users = UserStore.load(settings.users_file)
     app.state.users_mtime = os.stat(settings.users_file).st_mtime_ns
+    app.state.users_error = None
     app.state.limiter = RateLimiter(r, settings.rate_limit_per_minute)
     app.state.service = AgentService(
         engine=MaskingEngine(RedisTokenVault(r, settings.token_ttl_seconds)),
@@ -81,17 +82,30 @@ async def security_headers(request: Request, call_next):
 # ------------------------------------------------------------------ auth
 def _users(app_: FastAPI) -> UserStore:
     """Reload the user list when the file changes, so removing someone's entry
-    revokes their access on their next request -- no restart needed. A broken
-    file keeps the last good list rather than locking everyone out."""
+    revokes their access on their next request -- no restart needed.
+
+    If the edited file is invalid, access is REFUSED for everyone until it is
+    fixed: keeping the previous list would keep a just-removed person in."""
     try:
         mtime = os.stat(settings.users_file).st_mtime_ns
-        if mtime != app_.state.users_mtime:
+    except OSError:
+        mtime = None
+    if mtime != app_.state.users_mtime:
+        app_.state.users_mtime = mtime
+        try:
             app_.state.users = UserStore.load(settings.users_file)
-            app_.state.users_mtime = mtime
+            app_.state.users_error = None
             log.warning("users file reloaded")
-    except (OSError, ValueError, KeyError) as exc:
-        log.error("users file reload failed, keeping previous list: %s", type(exc).__name__)
+        except Exception as exc:  # noqa: BLE001 -- any problem must fail closed
+            app_.state.users_error = str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+            log.error("users file invalid, refusing all requests: %s", app_.state.users_error)
+    if app_.state.users_error:
+        raise UsersFileError(app_.state.users_error)
     return app_.state.users
+
+
+class UsersFileError(Exception):
+    pass
 
 
 async def current_user(request: Request) -> User:
@@ -100,6 +114,13 @@ async def current_user(request: Request) -> User:
     try:
         user = _users(request.app).authenticate(key, request.headers.get("x-act-as"))
         await request.app.state.limiter.check(user.audit_id)
+        if user.acting_via:
+            # The bridge's own budget too: a leaked bridge key must not get the
+            # limit once per impersonated person.
+            await request.app.state.limiter.check(f"principal:{user.acting_via}")
+    except UsersFileError as exc:
+        raise HTTPException(status_code=503, detail="access list is being updated or is "
+                            "invalid; ask the administrator") from exc
     except AuthError as exc:
         status = 429 if "rate limit" in str(exc) else 401
         raise HTTPException(status_code=status, detail=str(exc)) from exc
@@ -120,7 +141,8 @@ def _ip(request: Request) -> str | None:
 # ---------------------------------------------------------------- models
 class AskIn(BaseModel):
     question: str = Field(min_length=2, max_length=1000)
-    company_id: int
+    # Optional: defaults to the user's first company (used by the Telegram bot).
+    company_id: int | None = None
     session_id: str | None = Field(default=None, max_length=64)
 
 
@@ -170,7 +192,7 @@ async def reports(user: User = Depends(current_user)):
     return [
         {"id": r.id, "title": r.title, "description": r.description,
          "params": [{"name": p.name, "type": p.type, "required": p.required,
-                     "default": p.default} for p in r.params]}
+                     "default": p.default} for p in r.params if not p.internal]}
         for r in catalogue_for_role(user.role)
     ]
 
@@ -208,8 +230,14 @@ async def healthz(request: Request):
         status["redis"] = False
     llm = request.app.state.llm
     status["llm"] = await llm.health() if llm is not None else False
+    try:
+        _users(request.app)
+        status["users_file"] = "ok"
+    except UsersFileError:
+        status["users_file"] = "invalid"
     # The model is optional: without it the keyword router and report forms still work.
-    status["status"] = "ok" if status["db"] and status["redis"] else "down"
+    status["status"] = ("ok" if status["db"] and status["redis"] and status["users_file"] == "ok"
+                        else "down")
     sync = status.get("sync") or {}
     stale = (sync.get("failed") or 0) > 0 or (
         sync.get("max_lag_minutes") is not None

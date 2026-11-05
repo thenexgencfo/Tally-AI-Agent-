@@ -41,11 +41,13 @@ def test_amounts_and_invoice_numbers_are_not_masked():
     assert find_all(text) == []
 
 
-def test_account_numbers_only_in_column_mode():
-    assert find_all("acct 50200012345678") == []
+def test_account_numbers_masked_by_context_or_column():
+    assert entities_in("acct 50200012345678") == {"ACCOUNT"}          # keyword context
+    assert find_all("reference 50200012345678") == []                 # no context: not assumed
     assert entities_in("50200012345678", include_column_only=True) == {"ACCOUNT"}
 
 
-def test_lowercase_pan_is_not_matched_by_design():
-    # Tally stores PAN/GSTIN uppercase. Lowercase text is not an identifier format.
-    assert find_all("aabca1234k") == []
+def test_lowercase_identifiers_are_matched():
+    # People type identifiers in lowercase; they must still be masked.
+    assert entities_in("aabca1234k") == {"PAN"}
+    assert entities_in("27aabca1234k1z5") == {"GSTIN"}

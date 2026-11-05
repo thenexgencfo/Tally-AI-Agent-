@@ -16,6 +16,7 @@ TODAY = dt.date(2025, 3, 31)
     ("from 1 May 2024 to 15 June 2024", ("2024-05-01", "2024-06-15")),
     ("sales in May", ("2024-05-01", "2024-05-31")),
     ("sales in January", ("2025-01-01", "2025-01-31")),
+    ("sales in May", ("2024-05-01", "2024-05-31")),     # most recent May, not a future one
     ("last month", ("2025-02-01", "2025-02-28")),
     ("last quarter", ("2024-10-01", "2024-12-31")),
     ("last year", ("2023-04-01", "2024-03-31")),
@@ -86,3 +87,30 @@ async def test_planner_prompt_contains_only_masked_question():
     system, user_msg = llm.prompts[0]
     assert user_msg == "balance of [PARTY_1]"
     assert "party_details" not in system   # junior's catalogue excludes senior-only reports
+
+
+def test_month_without_year_is_never_in_the_future():
+    p = resolve_period("sales in January", dt.date(2026, 11, 5))
+    assert p.date_from == dt.date(2026, 1, 1)
+
+
+def test_unreadable_date_warns():
+    p = resolve_period("balance as on 31/02/2025", TODAY)
+    assert p.warning and "31/02/2025" in p.warning
+
+
+@pytest.mark.parametrize("q,group", [
+    ("list debtors who still need to pay us", "Sundry Debtors"),
+    ("customers yet to pay", "Sundry Debtors"),
+    ("bills we need to pay", "Sundry Creditors"),
+    ("supplier bills overdue", "Sundry Creditors"),
+])
+async def test_receivable_vs_payable_routing(q, group):
+    plan = await Planner(None).plan(q, "junior", TODAY)
+    assert plan.params["group"] == group
+
+
+async def test_model_receivables_choice_respected_for_customer_questions():
+    llm = FakeLLM(plan={"report_id": "bills_outstanding", "params": {"group": "Sundry Debtors"}})
+    plan = await Planner(llm).plan("customers yet to pay", "junior", TODAY)
+    assert plan.params["group"] == "Sundry Debtors"

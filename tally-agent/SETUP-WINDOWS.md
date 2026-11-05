@@ -111,7 +111,12 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 Get-ChildItem C:\tally-agent -Recurse | Unblock-File
 ```
 
-### B7. Keep the PC awake
+### B7. Encrypt the disk (BitLocker)
+The database files (a copy of your clients' books) and Tally's own data sit on this PC's disk. If the PC or its disk is stolen, encryption is what keeps them unreadable.
+- **Settings › Privacy & security › Device encryption** → On. Or, on Windows Pro: **Control Panel › BitLocker Drive Encryption › Turn on BitLocker** for the C: drive (and D: if you keep backups there).
+- Save the **recovery key** somewhere off this PC (print it, or keep it with the backup key from Part G).
+
+### B8. Keep the PC awake
 The PC must stay on and signed in, because Tally and Docker Desktop run in your session.
 - **Settings › System › Power:** set *Sleep* to **Never** while plugged in.
 - Lock the screen when you walk away (Win + L). Locking is fine; signing out or shutting down stops the service.
@@ -211,7 +216,7 @@ Part F's firewall rule is what actually keeps strangers out, so this is safe.
 2. The company shows as *White Design Consultants* (the demo data).
 3. Try these questions:
    - `How much does Acme owe us?` → ₹1,50,000.00 Dr
-   - `receivables ageing` → total ₹3,13,000.00
+   - `receivables ageing` → net due ₹4,63,000.00
    - `net profit for FY 2024-25` → ₹1,49,000.00
    - `cash and bank balance`
 4. Try the **Reports (no AI)** tab too. It works even if the GPU is off.
@@ -300,7 +305,10 @@ Then ask a few questions you already know the answers to: a party balance, the a
 ```powershell
 $a = New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\tally-agent\sync\run-sync.ps1"'
 $t = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-Register-ScheduledTask -TaskName "Tally Agent Sync" -Action $a -Trigger $t
+# No time limit (the default kills it after 3 days), restart if it ever stops, ignore battery.
+$s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 `
+       -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName "Tally Agent Sync" -Action $a -Trigger $t -Settings $s
 Start-ScheduledTask -TaskName "Tally Agent Sync"
 ```
 The agent now syncs about once a minute. The badge in the web UI shows how fresh the data is, and logs are in `C:\tally-agent\sync\logs\`.
@@ -352,11 +360,13 @@ The Tally copy inside the agent can always be rebuilt from Tally. The **audit lo
    Register-ScheduledTask -TaskName "Tally Agent Backup" -Action $a -Trigger $t
    ```
    Use a different disk for `-OutDir`, and ideally copy the backups somewhere off-site as well.
-4. **Every 3 months, test a restore:**
+4. **Every 3 months, test a restore (a "drill"):**
    ```powershell
-   .\scripts\restore.ps1 -Backup D:\TallyAgentBackups\tally-YYYYMMDD-HHMM.dump.age -AgeIdentity E:\tally-agent-backup-key.txt -Confirm
+   .\scripts\restore.ps1 -Backup D:\TallyAgentBackups\tally-YYYYMMDD-HHMM.dump.age -AgeIdentity E:\tally-agent-backup-key.txt
    ```
-   A backup that has never been restored is not proven to work.
+   This restores into a temporary, separate database, checks it, and deletes it. **Your live system is not touched.** It should print `DRILL PASSED` with the number of audit rows. A backup that has never been restored is not proven to work.
+
+   Only in a real disaster (the database is lost) add `-ReallyReplaceProduction`. That replaces the live database, and first takes a fresh backup of whatever is there now, so recent audit records are not lost.
 
 ---
 
@@ -375,7 +385,7 @@ Telegram is a third-party service, so the bridge is set up to **always show mask
    - So n8n trusts the certificate, copy `caddy-root.crt` to the n8n server and set `NODE_EXTRA_CA_CERTS=/path/to/caddy-root.crt` in its environment.
 5. Activate both workflows and message the bot: `receivables ageing`.
 
-The bot answers only in private chats, never in groups.
+The bot answers only in private chats, never in groups. It uses the person's first company; to ask about another one, start the message with `/c 2` (company 2), e.g. `/c 2 receivables ageing`.
 
 ---
 
@@ -399,6 +409,7 @@ The bot answers only in private chats, never in groups.
 | Certificate error after D5 | You installed the certificate under *Personal* instead of *Trusted Root Certification Authorities* |
 | "Synced N minutes ago" warning | Tally is closed, or the sync task stopped. Check `sync\logs\` and run `.\sync\run-sync.ps1 -Once` |
 | "Last Tally sync FAILED" | Read `loader\c1\error-log.txt`. The company name in `config.json` must match Tally exactly |
+| "access list is being updated or is invalid" for everyone | `config\users.json` has a mistake (a missing comma, a misspelt field). Fix it; access returns immediately. `https://TS_IP/healthz` shows `"users_file":"invalid"` until then |
 | Answers come from "keyword routing" | The AI model is down. Run `docker compose --env-file .env logs ollama` and check `nvidia-smi` |
 | First question is slow | Normal: the model is loading onto the GPU. It stays loaded for 30 minutes |
 | `docker compose` complains about a missing value | A line in `.env` is empty. Fill in every line from C1 |

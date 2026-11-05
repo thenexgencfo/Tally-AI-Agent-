@@ -10,6 +10,7 @@ is a reviewed code change rather than a model decision.
 from __future__ import annotations
 
 import datetime as dt
+import math
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Literal, Sequence
@@ -28,6 +29,10 @@ class ParamSpec:
     required: bool = True
     default: Any = None
     description: str = ""
+    # Internal parameters are never offered to the model or the form and are
+    # always left at their default (e.g. row limits: NULL = all rows, so totals
+    # are never computed from a truncated list).
+    internal: bool = False
 
     @property
     def is_name(self) -> bool:
@@ -92,7 +97,7 @@ REPORTS: dict[str, ReportSpec] = {
                 _D("ledger", "ledger"),
                 _D("date_from", "date"),
                 _D("date_to", "date"),
-                _D("limit", "int", required=False, default=200),
+                _D("limit", "int", required=False, default=None, internal=True),
             ),
             value_columns=("debit", "credit", "running_balance"),
             examples=("show me the ledger of X for this year",),
@@ -101,15 +106,15 @@ REPORTS: dict[str, ReportSpec] = {
             id="bills_outstanding",
             title="Bills Outstanding",
             description=(
-                "Unpaid bill-by-bill detail with age in days and ageing bucket. "
-                "group is 'Sundry Debtors' for receivables, 'Sundry Creditors' "
-                "for payables."
+                "Unpaid bill-by-bill detail with age in days and ageing bucket; "
+                "advances shown as negative. group is 'Sundry Debtors' for "
+                "receivables, 'Sundry Creditors' for payables."
             ),
             function="tally.fn_bills_outstanding",
             params=(
                 _D("group", "group", default="Sundry Debtors"),
                 _D("as_of", "date"),
-                _D("limit", "int", required=False, default=200),
+                _D("limit", "int", required=False, default=None, internal=True),
             ),
             value_columns=("outstanding", "age_days", "bucket"),
             examples=("which invoices are overdue", "outstanding bills of creditors"),
@@ -165,7 +170,7 @@ REPORTS: dict[str, ReportSpec] = {
                 _D("date_from", "date"),
                 _D("date_to", "date"),
                 _D("voucher_type", "text", required=False, default=None),
-                _D("limit", "int", required=False, default=100),
+                _D("limit", "int", required=False, default=None, internal=True),
             ),
             value_columns=("amount",),
             examples=("what was entered yesterday", "show sales vouchers in May"),
@@ -212,7 +217,7 @@ REPORTS: dict[str, ReportSpec] = {
                 _D("date_from", "date"),
                 _D("date_to", "date"),
                 _D("min_amount", "numeric", required=False, default=None),
-                _D("limit", "int", required=False, default=100),
+                _D("limit", "int", required=False, default=None, internal=True),
             ),
             value_columns=("amount",),
             examples=("find payments above 1 lakh", "vouchers for X in June"),
@@ -248,9 +253,14 @@ def _coerce(spec: ParamSpec, value: Any) -> Any:
             return value
         return dt.date.fromisoformat(str(value)[:10])
     if spec.type == "int":
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("not finite")
         return int(value)
     if spec.type == "numeric":
-        return Decimal(str(value))
+        d = Decimal(str(value))
+        if not d.is_finite():
+            raise ValueError("not finite")
+        return d
     return str(value)
 
 
@@ -260,19 +270,19 @@ class ReportError(Exception):
 
 def build_arguments(spec: ReportSpec, params: dict[str, Any]) -> list[Any]:
     """Validate and order parameters. Unknown keys are rejected, not ignored."""
-    known = {p.name for p in spec.params}
+    known = {p.name for p in spec.params if not p.internal}
     unknown = set(params) - known
     if unknown:
         raise ReportError(f"unknown parameter(s): {', '.join(sorted(unknown))}")
 
     args: list[Any] = []
     for p in spec.params:
-        raw = params.get(p.name, p.default)
+        raw = p.default if p.internal else params.get(p.name, p.default)
         if raw is None and p.required:
             raise ReportError(f"missing required parameter '{p.name}'")
         try:
             args.append(_coerce(p, raw))
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError, OverflowError, ArithmeticError) as exc:
             raise ReportError(f"parameter '{p.name}' is not a valid {p.type}") from exc
     return args
 
@@ -283,11 +293,14 @@ async def run_report(
     company_id: int,
     params: dict[str, Any],
     *,
-    max_rows: int = 500,
-) -> list[dict]:
+    max_rows: int = 20_000,
+) -> tuple[list[dict], bool]:
+    """Returns (rows, truncated). truncated=True means the report had more than
+    max_rows rows; callers must say so, because totals then cover a subset."""
     args = build_arguments(spec, params)
     placeholders = ", ".join(f"${i+1}" for i in range(len(args) + 1))
     # spec.function comes from this module's fixed registry, never from input.
-    sql = f"SELECT * FROM {spec.function}({placeholders}) LIMIT {int(max_rows)}"
+    sql = f"SELECT * FROM {spec.function}({placeholders}) LIMIT {int(max_rows) + 1}"
     rows: Sequence[asyncpg.Record] = await con.fetch(sql, int(company_id), *args)
-    return [dict(r) for r in rows]
+    truncated = len(rows) > max_rows
+    return [dict(r) for r in rows[:max_rows]], truncated

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     # --- service --------------------------------------------------------
     bind_host: str = "127.0.0.1"
     bind_port: int = 8080
-    max_rows: int = 500
+    max_rows: int = 20_000      # rows a report may return; totals cover all of them
     sync_stale_warn_minutes: int = 10
 
     # Salt for audit-log question hashes. MUST be set in production.

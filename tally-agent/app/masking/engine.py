@@ -22,7 +22,6 @@ from .recognizers import Match, find_all
 from .vault import TokenVault
 
 TOKEN_RE = re.compile(r"\[([A-Z]+)_(\d+)\]")
-_PLAIN_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 
 # Database columns whose value is sensitive in full, whatever it looks like.
 SENSITIVE_COLUMNS: dict[str, str] = {
@@ -54,6 +53,7 @@ NEVER_MASK: frozenset[str] = frozenset(
         "total_expense", "age_days", "bucket", "bill_count", "row_count",
         "txn_date", "bill_date", "date", "dr_cr", "section", "side",
         "voucher_count", "running_balance", "quantity", "rate",
+        "credit_limit", "credit_days", "stock_value", "kind",
     }
 )
 
@@ -70,44 +70,87 @@ _ALIAS_STOPWORDS: frozenset[str] = frozenset(
 )
 
 
+_HONORIFIC = re.compile(
+    r"^(?:m/s\.?|m/s|messrs\.?|shri|shree|sri|smt\.?|mr\.?|mrs\.?|ms\.?|dr\.?|the)\s+",
+    re.IGNORECASE)
+_SUFFIX = re.compile(
+    r"[\s,]+(?:pvt\.?\s*ltd\.?|private\s+limited|p\.?\s*ltd\.?|ltd\.?|limited|llp|"
+    r"(?:&|and)\s+co\.?|co\.)$", re.IGNORECASE)
+_INITIALS = re.compile(r"^(?:[a-z]\.?\s+)+", re.IGNORECASE)
+
+
+def _variants(name: str) -> list[str]:
+    """Ways people write a ledger name: without 'M/s', initials or 'Pvt Ltd'."""
+    out: list[str] = []
+    cur = name.strip()
+    for _ in range(3):
+        nxt = _SUFFIX.sub("", _INITIALS.sub("", _HONORIFIC.sub("", cur))).strip(" ,.")
+        if nxt == cur:
+            break
+        cur = nxt
+        out.append(cur)
+    return out
+
+
 @dataclass(frozen=True)
 class NameIndex:
-    """Exact party names from the books, plus safe one-word aliases."""
+    """Exact names from the books, plus safe variants and one-word aliases.
+    Every entry maps to the canonical ledger name and its entity type."""
 
     pattern: re.Pattern[str]
-    _canon: dict[str, str]
+    _canon: dict[str, tuple[str, str]]
 
     def canonical(self, matched: str) -> str:
-        return self._canon.get(matched.lower(), matched)
+        return self._canon.get(matched.lower(), (matched, "PARTY"))[0]
+
+    def entity(self, matched: str) -> str:
+        return self._canon.get(matched.lower(), (matched, "PARTY"))[1]
 
     @classmethod
-    def build(cls, party_names: list[str], other_ledgers: list[str]) -> "NameIndex | None":
-        canon: dict[str, str] = {}
+    def build(cls, party_names: list[str], other_ledgers: list[str],
+              company: str | None = None) -> "NameIndex | None":
+        canon: dict[str, tuple[str, str]] = {}
         parties = sorted({n.strip() for n in party_names if n and len(n.strip()) >= 3})
         for name in parties:
-            canon[name.lower()] = name
+            canon[name.lower()] = (name, "PARTY")
+        if company and len(company.strip()) >= 3:
+            canon[company.strip().lower()] = (company.strip(), "COMPANY")
 
-        # A first word becomes an alias only if it is distinctive: long enough,
-        # not generic, shared by no other party, and absent from every
-        # non-party ledger name (so "Design" never masks "Design Fees").
+        other_full = {o.strip().lower() for o in other_ledgers}
         other_words = {
             w.lower() for ledger in other_ledgers for w in re.findall(r"[\w&/.-]+", ledger)
         }
-        first_words: dict[str, list[str]] = {}
-        for name in parties:
-            words = name.split()
+
+        # Variants ("Sharma Traders" for "M/s Sharma Traders"): only if unambiguous
+        # and not the name of some non-party ledger.
+        owners: dict[str, set[tuple[str, str]]] = {}
+        for full, (name, ent) in list(canon.items()):
+            for v in _variants(name):
+                if len(v) >= 5 and v.lower() not in other_full:
+                    owners.setdefault(v.lower(), set()).add((name, ent))
+        for v, who in owners.items():
+            if len(who) == 1 and v not in canon:
+                canon[v] = next(iter(who))
+
+        # One-word alias: distinctive first word of the name (after stripping
+        # honorifics/initials), unique across parties, absent from every
+        # non-party ledger name -- so "Design" never masks "Design Fees".
+        first_words: dict[str, set[tuple[str, str]]] = {}
+        for name, ent in set(canon.values()):
+            core = (_variants(name) or [name])[-1]
+            words = core.split()
             if len(words) < 2:
                 continue
-            first_words.setdefault(words[0].lower(), []).append(name)
-        for word, owners in first_words.items():
+            first_words.setdefault(words[0].lower(), set()).add((name, ent))
+        for word, who in first_words.items():
             if (
-                len(owners) == 1
+                len(who) == 1
                 and len(word) >= 4
                 and word not in _ALIAS_STOPWORDS
                 and word not in other_words
                 and word not in canon
             ):
-                canon[word] = owners[0]
+                canon[word] = next(iter(who))
 
         if not canon:
             return None
@@ -140,7 +183,7 @@ class MaskResult:
 # Identifiers keep their last 4 characters (the usual convention for PAN,
 # account and phone numbers). For names and free text, trailing characters are
 # both useless and leaky, so they get a stable pseudonym or are withheld.
-_PSEUDONYM = {"PARTY": "Party {n}", "ADDRESS": "[address withheld]",
+_PSEUDONYM = {"PARTY": "Party {n}", "COMPANY": "the company", "ADDRESS": "[address withheld]",
               "EMAIL": "[email withheld]", "PINCODE": "[pincode withheld]"}
 
 
@@ -191,7 +234,7 @@ class MaskingEngine:
                 # "Acme Interiors Pvt Ltd" in a result share one token and the
                 # database receives the exact name.
                 canonical = names.canonical(m.group(0))
-                matches.append(Match(m.start(), m.end(), canonical, "PARTY"))
+                matches.append(Match(m.start(), m.end(), canonical, names.entity(m.group(0))))
 
         if not matches:
             return MaskResult(text, [])
@@ -223,10 +266,6 @@ class MaskingEngine:
                 if value is None or value == "":
                     new[key] = value
                 elif lkey in NEVER_MASK:
-                    new[key] = value
-                elif (isinstance(value, str) and _PLAIN_NUMBER.fullmatch(value)
-                      and lkey not in SENSITIVE_COLUMNS):
-                    # An amount serialised as text, e.g. from the cache.
                     new[key] = value
                 elif lkey in SENSITIVE_COLUMNS:
                     new[key] = await self._vault.token_for(

@@ -112,7 +112,12 @@
   /* Summary */
   #summary-section { background:var(--ink); border-radius:var(--radius-lg); padding:28px; margin-bottom:20px; color:#fff; }
   .summary-title { font-size:11px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; color:var(--teal); margin-bottom:16px; }
-  #summary-text { font-family:var(--mono); font-size:13px; line-height:1.8; color:#c8d0e8; white-space:pre-wrap; min-height:80px; }
+  #summary-text { font-family:var(--mono); font-size:13px; line-height:1.8; color:#c8d0e8; white-space:pre-wrap; overflow-wrap:anywhere; min-height:80px; }
+  .retry-btn { flex-shrink:0; font-size:11px; padding:3px 10px; border-radius:6px; border:1px solid var(--danger); background:transparent; color:var(--danger); cursor:pointer; }
+  #thank-you-summary { text-align:left; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; max-height:40vh; overflow:auto; user-select:text; -webkit-user-select:text; }
+  .photo-lock { font-size:12px; color:var(--ink-soft); margin:0 0 6px; }
+  #submit-error { display:none; margin:12px 0; padding:12px 14px; border-radius:10px; border:1px solid var(--danger); color:var(--danger); background:rgba(220,38,38,.06); font-size:14px; }
+  #submit-error button { margin-top:8px; padding:8px 18px; border-radius:8px; border:0; background:var(--danger); color:#fff; font-weight:600; cursor:pointer; }
   .summary-placeholder { color:#4a4e6a; font-style:italic; }
 
   /* Copy button */
@@ -187,7 +192,8 @@
   <div class="thank-you-card">
     <div class="thank-you-icon">✅</div>
     <h1>Submitted!</h1>
-    <p>The summary was copied and WhatsApp was opened. You can paste the report into your group now. You may close this tab.</p>
+    <p id="thank-you-text">The report was saved, the summary was copied and WhatsApp was opened. You can paste the report into your group now. You may close this tab.</p>
+    <pre id="thank-you-summary" hidden></pre>
   </div>
 </div>
 
@@ -367,6 +373,7 @@
       <div id="summary-text"><span class="summary-placeholder">Fill in the fields above — your WhatsApp message will appear here...</span></div>
     </div>
 
+    <div id="submit-error" role="alert"><span id="submit-error-text"></span><br><button type="button" id="submit-retry">Retry</button></div>
     <button id="copy-btn" disabled onclick="submitForm()">
       <span id="copy-icon">📋</span>
       <span id="copy-label">Copy & Open WhatsApp</span>
@@ -376,21 +383,30 @@
   </div>
 </div>
 
+<script src="audit-common.js?v=2"></script>
 <script>
+"use strict";
 /* ═══════════════════════════════════════════════
-   ██  CONFIGURATION — edit these values          
+   ██  CONFIGURATION — edit these values
 ═══════════════════════════════════════════════ */
 
-const ACCESS_PIN   = "1234";      // ← Change to your PIN
+// The PIN is no longer written here: anything in this file is public.
+// Auditors type it; it is sent to n8n as the X-Audit-Key header and n8n checks it.
+// → In n8n set both webhooks to Header Auth (name X-Audit-Key, value = the PIN).
+const PIN_LENGTH = 6;
+// If photo uploads fail with a CORS error after enabling this, set to true
+// (the PIN is then sent inside the request instead of as a header).
+const AUTH_IN_BODY = false;
+AuditCommon.setAuthInBody(AUTH_IN_BODY);
 
-// ── n8n webhooks (replace the old service-account Drive calls) ──
-const PHOTO_UPLOAD_WEBHOOK_URL = "https://n8n.tail61f871.ts.net/webhook/form1-photo-upload"; // receives one file at a time, returns {link, fileId}
-const FORM_SUBMIT_WEBHOOK_URL  = "https://n8n.tail61f871.ts.net/webhook/form1-submit";        // receives the final JSON payload
+// ── n8n webhooks ──
+const PHOTO_UPLOAD_WEBHOOK_URL = "https://n8n.tail61f871.ts.net/webhook/form1-photo-upload"; // one file at a time, returns {link, fileId}
+const FORM_SUBMIT_WEBHOOK_URL  = "https://n8n.tail61f871.ts.net/webhook/form1-submit";        // the final JSON payload
 
 const FORM2_URL    = "https://thenexgencfo.github.io/store-audit-forms/form2_on_store_sealing"; // ← Path/URL to Form 2
 
 // ── TEAM NAMES ────────────────────────────────────────────────────────────────
-// ✏️  Change team names HERE. The dropdown and database both update automatically.
+// ✏️  Change team names HERE. The dropdown, reports and file names all use them.
 // Keys must stay as teamA … teamJ (or add more following the same pattern).
 // ─────────────────────────────────────────────────────────────────────────────
 const TEAM_NAMES = {
@@ -408,6 +424,8 @@ const TEAM_NAMES = {
 
 // ── TL DATABASE ───────────────────────────────────────────────────────────────
 // Keys here match the keys in TEAM_NAMES exactly (teamA … teamJ).
+// NOTE: this list is visible to anyone who opens the page. The phone check is a
+// convenience, not security; the PIN checked by n8n is what protects the data.
 // ─────────────────────────────────────────────────────────────────────────────
 const TL_DATABASE = {
   teamA: { phone:"9876543210", email:"ravi.sharma@audit.com",  waLink:"https://chat.whatsapp.com/BcdmsGxBhma3F0OHqjTlt4" },
@@ -424,7 +442,6 @@ const TL_DATABASE = {
 
 /* ═══════════════════════════════════════════════
    POPULATE DROPDOWN FROM TEAM_NAMES
-   (runs once on load — no HTML edits needed)
 ═══════════════════════════════════════════════ */
 (function populateTLDropdown(){
   const sel = document.getElementById("tl-name");
@@ -440,34 +457,39 @@ const TL_DATABASE = {
    STATE
 ═══════════════════════════════════════════════ */
 let tlMatchConfirmed = false;
-
-// Stores uploaded file links per field: { fieldId: [ {name, link}, ... ] }
-let uploadedLinks    = { "team-photo": [], "backroom-photo": [] };
+let submitting = false;
+const AUDIT_ID = AuditCommon.auditId();   // links this Form 1 record to its Form 2 record
 
 /* ═══════════════════════════════════════════════
-   PIN
+   PIN  (sent to the server; not checked here)
 ═══════════════════════════════════════════════ */
 let pinBuffer = "";
-function pinPress(d){ if(pinBuffer.length>=4)return; pinBuffer+=d; updateDots(); if(pinBuffer.length===4)checkPin(); }
+(function buildDots(){
+  const box = document.querySelector(".pin-dots");
+  box.replaceChildren();
+  for(let i=0;i<PIN_LENGTH;i++){ const d=document.createElement("div"); d.className="pin-dot"; d.id=`dot-${i}`; box.appendChild(d); }
+  const hint = document.querySelector("#pin-gate .pin-card > p");
+  if(hint) hint.textContent = `Enter your ${PIN_LENGTH}-digit PIN to access the form`;
+})();
+function pinPress(d){ if(pinBuffer.length>=PIN_LENGTH)return; pinBuffer+=d; updateDots(); if(pinBuffer.length===PIN_LENGTH)checkPin(); }
 function pinDel(){ pinBuffer=pinBuffer.slice(0,-1); updateDots(); document.getElementById("pin-error").textContent=""; }
-function updateDots(){ for(let i=0;i<4;i++) document.getElementById(`dot-${i}`).classList.toggle("filled",i<pinBuffer.length); }
+function updateDots(){ for(let i=0;i<PIN_LENGTH;i++) document.getElementById(`dot-${i}`).classList.toggle("filled",i<pinBuffer.length); }
 function checkPin(){
-  if(pinBuffer===ACCESS_PIN){
-    document.getElementById("pin-gate").style.display="none";
-    document.getElementById("form-wrapper").style.display="block";
-  } else {
-    document.getElementById("pin-error").textContent="Incorrect PIN. Try again.";
-    setTimeout(()=>{ pinBuffer=""; updateDots(); },600);
-  }
+  AuditCommon.setAccessKey(pinBuffer);
+  pinBuffer=""; updateDots();
+  document.getElementById("pin-gate").style.display="none";
+  document.getElementById("form-wrapper").style.display="block";
 }
+// If n8n rejects the PIN, ask for it again (photos already picked can be retried).
+AuditCommon.onAuthRejected(()=>{
+  document.getElementById("pin-error").textContent="That PIN was not accepted. Please enter it again.";
+  document.getElementById("pin-gate").style.display="";
+});
 document.addEventListener("keydown",(e)=>{
   if(!document.getElementById("pin-gate").offsetParent)return;
   if(e.key>="0"&&e.key<="9") pinPress(e.key);
   if(e.key==="Backspace") pinDel();
 });
-
-// No-op: kept for backward compat in case any call sites reference it
-function parseTokenFromHash(){}
 
 /* ═══════════════════════════════════════════════
    FINANCIAL YEAR & FOLDER HELPERS
@@ -475,147 +497,91 @@ function parseTokenFromHash(){}
 function getFinancialYear(date){
   const m = date.getMonth(); // 0=Jan
   const y = date.getFullYear();
-  if(m >= 3){ // April or later → FY starts this year
-    return `${y}-${String(y+1).slice(-2)}`;
-  } else {    // Jan–Mar → FY started previous year
-    return `${y-1}-${String(y).slice(-2)}`;
-  }
+  return m >= 3 ? `${y}-${String(y+1).slice(-2)}` : `${y-1}-${String(y).slice(-2)}`;
 }
-
-function getMonthName(date){
-  return date.toLocaleDateString("en-IN",{month:"long"});
-}
-
+function getMonthName(date){ return date.toLocaleDateString("en-IN",{month:"long"}); }
 function sanitizeName(str){
   // PascalCase, strip spaces/special chars
-  return str.trim().split(/\s+/).map(w=>w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join("");
+  return str.trim().split(/\s+/).map(w=>w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join("").replace(/[^A-Za-z0-9]/g,"");
 }
-
-function formatDate(date){
-  return date.toLocaleDateString("en-IN",{day:"2-digit",month:"long",year:"numeric"}).replace(/ /g,"");
-  // e.g. "16June2026"
-}
+function formatDate(date){ return date.toLocaleDateString("en-IN",{day:"2-digit",month:"long",year:"numeric"}).replace(/ /g,""); }
+function teamKey(){ return document.getElementById("tl-name").value; }
+function teamName(){ return TEAM_NAMES[teamKey()] || ""; }
 
 function buildFileName(fieldLabel, index, ext, date){
-  const tlName    = sanitizeName(document.getElementById("tl-name").value);
+  const tl        = sanitizeName(teamName());
   const storeCode = document.getElementById("store-code").value.trim().replace(/[^a-zA-Z0-9]/g,"");
-  const dateStr   = formatDate(date);
   const suffix    = index > 0 ? `_${index+1}` : "";
-  return `${tlName}_${dateStr}_${storeCode}_${fieldLabel}${suffix}.${ext}`;
+  return `${tl}_${formatDate(date)}_${storeCode}_${fieldLabel}${suffix}.${ext}`;
 }
-
-
-async function uploadFileToDrive(file, fileName, meta){
-  const form = new FormData();
-  form.append("file", file, fileName);
-  form.append("fileName", fileName);
-  form.append("fieldId", meta.fieldId);
-  form.append("teamLeaderName", meta.tlName);
-  form.append("storeCode", meta.storeCode);
-  form.append("financialYear", meta.fy);
-  form.append("month", meta.month);
-
-  const res = await fetch(PHOTO_UPLOAD_WEBHOOK_URL, { method:"POST", body:form });
-  if(!res.ok){ const err = await res.text(); throw new Error(`Upload failed: ${res.status} ${err}`); }
-  const data = await res.json(); // n8n's "Respond to Webhook" node should return { link, fileId }
-  return { id:data.fileId, name:fileName, link:data.link };
-}
-
-function buildUploadMeta(fieldId, date){
-  return {
-    fieldId,
-    tlName:     document.getElementById("tl-name").value.trim(),
-    storeCode:  document.getElementById("store-code").value.trim(),
-    fy:         getFinancialYear(date),
-    month:      getMonthName(date)
-  };
+function buildUploadMeta(fieldId){
+  const now = new Date();
+  return { fieldId, teamLeaderName: teamName(), teamKey: teamKey(),
+           storeCode: document.getElementById("store-code").value.trim(),
+           financialYear: getFinancialYear(now), month: getMonthName(now), auditId: AUDIT_ID };
 }
 
 /* ═══════════════════════════════════════════════
-   PHOTO FIELD — instant upload on select
+   PHOTO FIELDS — upload on select (audit-common.js)
 ═══════════════════════════════════════════════ */
-async function handlePhotoSelect(input, previewId, statusId){
-  const fieldId = input.id;
-  const files   = Array.from(input.files||[]);
-
-  // Show previews immediately
-  const preview = document.getElementById(previewId);
-  preview.innerHTML="";
-  files.forEach(file=>{
-    const img=document.createElement("img");
-    img.src=URL.createObjectURL(file);
-    preview.appendChild(img);
+const PHOTO_FIELDS = {
+  "team-photo":     { label:"Photo_of_Team_on_Reaching_Store", previewId:"team-photo-preview",     statusId:"team-photo-status" },
+  "backroom-photo": { label:"Photo_of_Backroom",               previewId:"backroom-photo-preview", statusId:"backroom-photo-status" },
+};
+const photos = {};
+Object.entries(PHOTO_FIELDS).forEach(([id, f])=>{
+  photos[id] = AuditCommon.createPhotoField({
+    inputId:id, previewId:f.previewId, statusId:f.statusId, label:f.label, url:PHOTO_UPLOAD_WEBHOOK_URL,
+    buildName:buildFileName, buildMeta:()=>buildUploadMeta(id), onChange:updateSummary,
   });
+});
+function handlePhotoSelect(input){ photos[input.id].select(input.files); }
 
-  // Reset state for this field
-  uploadedLinks[fieldId]=[];
-  document.getElementById(statusId).innerHTML="";
-
-  if(files.length===0){ updateCopyBtn(); updateSummary(); return; }
-  
-  const PHOTO_LABEL = {
-    "team-photo":     "Photo_of_Team_on_Reaching_Store",
-    "backroom-photo": "Photo_of_Backroom",
-  };
-  const label = PHOTO_LABEL[fieldId] || fieldId;
-
-  // Build status list showing "uploading" for all files first
-  const statusItems = files.map(f=>({name:f.name,status:"uploading",link:null}));
-  renderUploadStatus(statusId, statusItems);
-
-  const now = new Date();
-  for(let i=0;i<files.length;i++){
-    const file  = files[i];
-    const ext   = file.name.split(".").pop() || "jpg";
-    const fname = buildFileName(label, i, ext, now);
-    try{
-      const uploaded = await uploadFileToDrive(file, fname, buildUploadMeta(fieldId, now));
-      uploadedLinks[fieldId].push({ name:fname, link:uploaded.link });
-      statusItems[i]={ name:fname, status:"done", link:uploaded.link };
-    } catch(e){
-      statusItems[i]={ name:fname, status:"err", link:null };
-      console.error("Instant upload error:", e);
-    }
-    renderUploadStatus(statusId, statusItems);
-    updateSummary(); // refresh links in preview as each one finishes
-  }
-
-  updateCopyBtn();
-  updateSummary();
+// Photos are named and filed by team leader + store code, so those must come first.
+function identityReady(){ return tlMatchConfirmed && AuditCommon.valid.storeCode(document.getElementById("store-code").value.trim()); }
+(function addPhotoLocks(){
+  Object.keys(PHOTO_FIELDS).forEach(id=>{
+    const p=document.createElement("p"); p.className="photo-lock"; p.id=`${id}-lock`;
+    p.textContent="Select team leader, enter the matching phone and the store code first.";
+    document.getElementById(id).insertAdjacentElement("beforebegin", p);
+  });
+})();
+function updatePhotoLocks(){
+  const ok=identityReady();
+  Object.keys(PHOTO_FIELDS).forEach(id=>{
+    document.getElementById(id).disabled=!ok;
+    document.getElementById(`${id}-lock`).style.display= ok ? "none" : "block";
+  });
 }
 
 /* ═══════════════════════════════════════════════
    TL LOOKUP
 ═══════════════════════════════════════════════ */
 function onLookupChange(){
-  const teamKey  = document.getElementById("tl-name").value;   // e.g. "teamA"
+  const key      = teamKey();
   const phone    = document.getElementById("tl-phone").value.trim();
   const emailFld = document.getElementById("tl-email");
   const waFld    = document.getElementById("wa-link");
   const warn     = document.getElementById("mismatch-warning");
-  const rec      = TL_DATABASE[teamKey];
+  const rec      = TL_DATABASE[key];
 
-  // If no team selected yet, or phone not entered — clear and wait
-  if(!teamKey || !phone){ clearAutoFill(emailFld,waFld); warn.style.display="none"; tlMatchConfirmed=false; updateSummary(); updateCopyBtn(); return; }
+  if(!key || !phone){ clearAutoFill(emailFld,waFld); warn.style.display="none"; tlMatchConfirmed=false; updateSummary(); return; }
 
   if(rec && rec.phone===phone){
-    // ✅ Team + phone match — auto-fill email & WhatsApp link
     emailFld.value=rec.email; emailFld.classList.add("autofilled");
     waFld.value=rec.waLink;   waFld.classList.add("autofilled");
     warn.style.display="none"; tlMatchConfirmed=true;
   } else {
-    // ❌ Team found in DB but phone doesn't match
     clearAutoFill(emailFld,waFld);
-    warn.style.display=(teamKey in TL_DATABASE)?"flex":"none";
+    warn.style.display=(key in TL_DATABASE)?"flex":"none";
     tlMatchConfirmed=false;
   }
-  updateSummary(); updateCopyBtn();
+  updateSummary();
 }
-
 function clearAutoFill(e,w){ e.value=""; e.classList.remove("autofilled"); w.value=""; w.classList.remove("autofilled"); }
 
 /* ═══════════════════════════════════════════════
-   REQUIRED FIELDS & PROGRESS
+   REQUIRED FIELDS, FORMAT CHECKS & PROGRESS
 ═══════════════════════════════════════════════ */
 const REQUIRED_IDS = [
   "tl-name","tl-phone",
@@ -624,14 +590,22 @@ const REQUIRED_IDS = [
   "store-contact","store-email","arm-email","rm-email",
   "team-photo","backroom-photo"
 ];
-
+const FORMAT_CHECKS = {
+  "tl-phone":      [AuditCommon.valid.mobile, "TL phone (10 digits)"],
+  "store-code":    [AuditCommon.valid.storeCode, "store code (letters, digits, -)"],
+  "store-contact": [AuditCommon.valid.phone, "store phone"],
+  "store-email":   [AuditCommon.valid.email, "store email"],
+  "arm-email":     [AuditCommon.valid.email, "ARM email"],
+  "rm-email":      [AuditCommon.valid.email, "RM email"],
+};
 function fieldFilled(id){
-  const el=document.getElementById(id);
-  if(el.type==="file") {
-    // Ensure files are picked AND the backend responses have arrived/saved completely
-    return el.files && el.files.length > 0 && uploadedLinks[id] && uploadedLinks[id].length === el.files.length;
-  }
-  return el.value.trim()!=="";
+  if(photos[id]) return photos[id].done();
+  return document.getElementById(id).value.trim()!=="";
+}
+function badFormats(){
+  return Object.entries(FORMAT_CHECKS)
+    .filter(([id,[ok]])=>{ const v=document.getElementById(id).value.trim(); return v!=="" && !ok(v); })
+    .map(([,[,label]])=>label);
 }
 function allRequiredFilled(){ return REQUIRED_IDS.every(fieldFilled); }
 function filledCount(){ return REQUIRED_IDS.filter(fieldFilled).length; }
@@ -639,20 +613,28 @@ function filledCount(){ return REQUIRED_IDS.filter(fieldFilled).length; }
 function updateCopyBtn(){
   const btn  = document.getElementById("copy-btn");
   const hint = document.getElementById("btn-hint");
-  const ready = tlMatchConfirmed && allRequiredFilled();
+  const bad  = badFormats();
+  const ready = tlMatchConfirmed && allRequiredFilled() && bad.length===0 && !submitting;
   btn.disabled=!ready;
+  updatePhotoLocks();
 
-  if(!tlMatchConfirmed && document.getElementById("tl-name").value && document.getElementById("tl-phone").value){
+  const failed = Object.values(photos).some(p=>p.failed());
+  const uploading = Object.values(photos).some(p=>p.uploading());
+  if(!tlMatchConfirmed && teamKey() && document.getElementById("tl-phone").value){
     hint.textContent="Fix the name/phone mismatch to enable";
+  } else if(bad.length){
+    hint.textContent="Please check: "+bad.join(", ");
+  } else if(failed){
+    hint.textContent="A photo failed to upload — tap Retry next to it";
+  } else if(uploading){
+    hint.textContent="Photos are uploading…";
   } else if(!allRequiredFilled()){
     const rem=REQUIRED_IDS.length-filledCount();
-    hint.textContent=`${rem} required field${rem!==1?"s":""} remaining or photos uploading`;
+    hint.textContent=`${rem} required field${rem!==1?"s":""} remaining`;
   } else {
     hint.textContent="All good — tap to copy & open WhatsApp";
   }
-
-  const pct=(filledCount()/REQUIRED_IDS.length)*100;
-  document.getElementById("progress-fill").style.width=pct+"%";
+  document.getElementById("progress-fill").style.width=(filledCount()/REQUIRED_IDS.length)*100+"%";
 }
 
 /* ═══════════════════════════════════════════════
@@ -661,29 +643,26 @@ function updateCopyBtn(){
 function fv(id){
   const el=document.getElementById(id);
   if(!el) return "—";
-  if(el.type==="file") return el.files.length>0?`${el.files.length} photo(s) selected`:"—";
+  if(id==="tl-name") return teamName() || "—";
   return el.value.trim()||"—";
 }
-
-function buildSummary(photoLinksMap){
-  const now  = new Date();
-  const date = now.toLocaleDateString("en-IN",{day:"2-digit",month:"long",year:"numeric"});
-
-  // Build photo link lines
+function form2Link(){
+  const q = new URLSearchParams({ audit:AUDIT_ID, team:teamKey(), store:document.getElementById("store-code").value.trim() });
+  return `${FORM2_URL}?${q.toString()}`;
+}
+function buildSummary(){
+  const date = new Date().toLocaleDateString("en-IN",{day:"2-digit",month:"long",year:"numeric"});
   function photoLines(fieldId, label){
-    const links = photoLinksMap && photoLinksMap[fieldId];
-    if(!links || links.length===0){
-      const count=document.getElementById(fieldId)?.files?.length||0;
-      return label+": "+(count>0?`${count} photo(s) — will upload on submit`:"—");
-    }
+    const p = photos[fieldId], links = p.links();
+    if(links.length===0) return label+": "+(p.count()>0?`${p.count()} photo(s) uploading`:"—");
     const lines=[label+":"];
     links.forEach((f,i)=>{ lines.push(`  ${i+1}. ${f.name}\n     ${f.link}`); });
     return lines.join("\n");
   }
-
   return [
     `📋 *STORE AUDIT REPORT – ON REACHING STORE*`,
     `🗓️ Date: ${date}`,
+    `🆔 Audit ID: ${AUDIT_ID}`,
     ``,
     `🏪 *STORE INFORMATION*`,
     `Store Code    : ${fv("store-code")}`,
@@ -713,136 +692,28 @@ function buildSummary(photoLinksMap){
     photoLines("backroom-photo","Backroom Photo"),
     ``,
     `📝 *NEXT STEP*`,
-    `Form 2 (Store Sealing): ${FORM2_URL}`,
+    `Form 2 (Store Sealing): ${form2Link()}`,
   ].join("\n");
 }
-
 function updateSummary(){
-  const el=document.getElementById("summary-text");
-  el.textContent=buildSummary(uploadedLinks);
+  document.getElementById("summary-text").textContent=buildSummary();
   updateCopyBtn();
 }
 
 /* ═══════════════════════════════════════════════
-   UPLOAD STATUS UI helper
-═══════════════════════════════════════════════ */
-function renderUploadStatus(statusId, items){
-  const el=document.getElementById(statusId);
-  el.innerHTML=items.map(item=>`
-    <div class="upload-item">
-      <span class="uname">${item.name}</span>
-      <span class="ustatus ${item.status}">${item.status==="uploading"?"Uploading…":item.status==="done"?"✅ Saved":"❌ Failed"}</span>
-      ${item.link?`<a href="${item.link}" target="_blank">View</a>`:""}
-    </div>`).join("");
-}
-
-/* ═══════════════════════════════════════════════
    SUBMIT
-   Photos are already uploaded in handlePhotoSelect.
-   On submit: (1) copy summary, (2) open WhatsApp,
-   (3) retry any failed/pending uploads in background,
-   (4) fire webhook.
+   The tap copies the summary and opens WhatsApp (both must happen during the
+   tap itself on iPhone), then the record is sent to n8n and the thank-you
+   screen appears ONLY once n8n confirms. On failure the form stays open.
 ═══════════════════════════════════════════════ */
-async function submitForm(){
-  const btn=document.getElementById("copy-btn");
-  if(btn.disabled) return;
-
-  // ── STEP 1: Build & copy the summary text FIRST (synchronous) ──
-  // Do this before any async work so the clipboard write can also
-  // happen in the same user-gesture tick on most browsers.
-  const summaryText = buildSummary(uploadedLinks);
-  try{ await navigator.clipboard.writeText(summaryText); }
-  catch(e){
-    const ta=document.createElement("textarea");
-    ta.value=summaryText; document.body.appendChild(ta); ta.select();
-    document.execCommand("copy"); document.body.removeChild(ta);
-  }
-
-  // ── STEP 2: Open WhatsApp immediately after copy ──
-  // Must happen before any await to stay within the user-gesture window.
-  const waLink = document.getElementById("wa-link").value.trim();
-  if(waLink && waLink.startsWith("https://")){
-    window.open(waLink, "_blank");
-  }
-
-  // ── Button feedback right away ──
-  btn.classList.add("success");
-  document.getElementById("copy-icon").textContent="✅";
-  document.getElementById("copy-label").textContent="Copied! WhatsApp opened ✓";
-  setTimeout(()=>{
-    btn.classList.remove("success");
-    document.getElementById("copy-icon").textContent="📋";
-    document.getElementById("copy-label").textContent="Copy & Open WhatsApp";
-  }, 5000);
-
-  // ── Close the form: hide it and show the thank-you screen ──
-  // (Background upload retries / webhook below still continue to run.)
-  document.getElementById("form-wrapper").style.display="none";
-  document.getElementById("thank-you-screen").style.display="flex";
-
-  // ── STEP 3: Retry any photos that weren't uploaded yet (background) ──
-  // This handles the edge case where Drive auth happened AFTER file selection,
-  // or where individual uploads previously failed.
-  const PHOTO_FIELDS = [
-    { id:"team-photo",     label:"Photo_of_Team_on_Reaching_Store", statusId:"team-photo-status"     },
-    { id:"backroom-photo", label:"Photo_of_Backroom",               statusId:"backroom-photo-status" },
-  ];
-
-  const now = new Date();
-  let pendingFields = PHOTO_FIELDS.filter(f => {
-    const el = document.getElementById(f.id);          // ← fix: get element by id
-    const alreadyUploaded = (uploadedLinks[f.id]||[]).length;
-    const totalFiles = (el.files||[]).length;           // ← fix: use `el` not `input`
-    return totalFiles > 0 && alreadyUploaded < totalFiles;
-  });
-
-  if(pendingFields.length > 0){
-    const overlay=document.getElementById("submit-overlay");
-    const progressText=document.getElementById("submit-progress-text");
-    overlay.classList.add("active");
-
-      for(const field of pendingFields){
-        const input  = document.getElementById(field.id);
-        const files  = Array.from(input.files||[]);
-        const alreadyCount = (uploadedLinks[field.id]||[]).length;
-        uploadedLinks[field.id] = uploadedLinks[field.id] || [];
-
-        // Build status list preserving already-done items
-        const statusItems = files.map((f,i)=>{
-          if(i < alreadyCount){
-            return uploadedLinks[field.id][i]
-              ? { name:uploadedLinks[field.id][i].name, status:"done", link:uploadedLinks[field.id][i].link }
-              : { name:f.name, status:"uploading", link:null };
-          }
-          return { name:f.name, status:"uploading", link:null };
-        });
-        renderUploadStatus(field.statusId, statusItems);
-
-        for(let i=alreadyCount;i<files.length;i++){
-          const file  = files[i];
-          const ext   = file.name.split(".").pop()||"jpg";
-          const fname = buildFileName(field.label, i, ext, now);
-          progressText.textContent=`Uploading ${field.label.replace(/_/g," ")} (${i+1}/${files.length})…`;
-          try{
-            const uploaded = await uploadFileToDrive(file, fname, buildUploadMeta(field.id, now));
-            uploadedLinks[field.id].push({ name:fname, link:uploaded.link });
-            statusItems[i]={ name:fname, status:"done", link:uploaded.link };
-          } catch(e){
-            statusItems[i]={ name:fname, status:"err", link:null };
-            console.error("Retry upload error:", e);
-          }
-          renderUploadStatus(field.statusId, statusItems);
-        }
-      }
-    overlay.classList.remove("active");
-    updateSummary();
-  }
-
-  // ── STEP 4: Fire n8n webhook (non-blocking) ──
-  const finalSummary = buildSummary(uploadedLinks);
-  const payload={
-    timestamp:       now.toISOString(),
-    teamLeaderName:  document.getElementById("tl-name").value.trim(),
+function buildPayload(summaryText){
+  const photoLinks = {};
+  Object.keys(photos).forEach(id=>{ photoLinks[id]=photos[id].links(); });
+  return {
+    timestamp:       new Date().toISOString(),
+    auditId:         AUDIT_ID,
+    teamKey:         teamKey(),
+    teamLeaderName:  teamName(),
     teamLeaderPhone: document.getElementById("tl-phone").value.trim(),
     teamLeaderEmail: document.getElementById("tl-email").value.trim(),
     whatsappGroup:   document.getElementById("wa-link").value.trim(),
@@ -858,11 +729,52 @@ async function submitForm(){
     storeEmail:      document.getElementById("store-email").value.trim(),
     armEmail:        document.getElementById("arm-email").value.trim(),
     rmEmail:         document.getElementById("rm-email").value.trim(),
-    photoLinks:      uploadedLinks,
-    summaryText:     finalSummary,
+    photoLinks,
+    summaryText,
     formType:        "Form1_OnReachingStore"
   };
-  fetch(FORM_SUBMIT_WEBHOOK_URL,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}).catch(()=>{});
+}
+
+function submitForm(){
+  const btn=document.getElementById("copy-btn");
+  if(btn.disabled || submitting) return;
+  const summaryText = buildSummary();
+  // Synchronous, inside the tap: start the copy and open WhatsApp.
+  const copied = AuditCommon.copyAndOpen(summaryText, document.getElementById("wa-link").value.trim());
+  sendReport(buildPayload(summaryText), copied);
+}
+
+async function sendReport(payload, copied){
+  submitting = true; updateCopyBtn();
+  const banner = document.getElementById("submit-error");
+  banner.style.display="none";
+  const overlay=document.getElementById("submit-overlay");
+  overlay.querySelector("h3").textContent="Saving the report";
+  document.getElementById("submit-progress-text").textContent="Sending to the audit system…";
+  overlay.classList.add("active");
+  const copyOk = await copied;
+  try{
+    await AuditCommon.submitJson(FORM_SUBMIT_WEBHOOK_URL, payload);
+    overlay.classList.remove("active");
+    document.getElementById("thank-you-text").textContent = copyOk
+      ? "The report was saved, the summary was copied and WhatsApp was opened. Paste the report into your group now. You may close this tab."
+      : "The report was saved and WhatsApp was opened, but the summary could not be copied automatically. Long-press the text below, copy it, and paste it into your WhatsApp group.";
+    const pre = document.getElementById("thank-you-summary");
+    pre.textContent = payload.summaryText;
+    pre.hidden = copyOk;
+    document.getElementById("form-wrapper").style.display="none";
+    document.getElementById("thank-you-screen").style.display="flex";
+  } catch(e){
+    overlay.classList.remove("active");
+    submitting = false; updateCopyBtn();
+    document.getElementById("submit-error-text").textContent =
+      e instanceof AuditCommon.AuthRejected
+        ? "The PIN was not accepted, so the report was NOT saved. Enter the PIN again, then tap Retry."
+        : "The report was NOT saved (no connection or the server did not answer). Your answers are still here — tap Retry.";
+    banner.style.display="block";
+    banner.scrollIntoView({behavior:"smooth", block:"center"});
+    document.getElementById("submit-retry").onclick = ()=> sendReport(payload, Promise.resolve(copyOk));
+  }
 }
 
 /* ═══════════════════════════════════════════════
@@ -874,8 +786,6 @@ REQUIRED_IDS.forEach(id=>{
   el.addEventListener("input",updateCopyBtn);
   el.addEventListener("change",updateCopyBtn);
 });
-
-parseTokenFromHash();  // no-op, kept for safety
 updateSummary();
 </script>
 </body>

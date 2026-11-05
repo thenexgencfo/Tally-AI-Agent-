@@ -73,18 +73,30 @@ def summarize(spec: ReportSpec, rows: list[dict], params: dict) -> str:
         last = rows[-1]
         return (f"{params.get('ledger')}: {n} transactions from {params.get('date_from')} to "
                 f"{params.get('date_to')}. Debits {format_inr(_sum(rows, 'debit'))}, credits "
-                f"{format_inr(_sum(rows, 'credit'))}, closing {format_inr(last['running_balance'])}.")
+                f"{format_inr(_sum(rows, 'credit'))}, closing {format_inr(last['running_balance'])} "
+                f"{last.get('dr_cr', '')}.".replace(" .", "."))
     if rid == "bills_outstanding":
-        oldest = rows[0]
+        bills = [r for r in rows if r.get("kind", "Bill") == "Bill"]
+        adv = [r for r in rows if r.get("kind") == "Advance"]
         kind = "receivable" if params.get("group") == "Sundry Debtors" else "payable"
-        return (f"{n} {kind} bills outstanding as on {params.get('as_of')}, totalling "
-                f"{format_inr(_sum(rows, 'outstanding'))}. Oldest: {oldest['bill_ref']} of "
-                f"{oldest['party']}, {oldest['age_days']} days, {format_inr(oldest['outstanding'])}.")
+        text = (f"{len(bills)} {kind} bills outstanding as on {params.get('as_of')}, totalling "
+                f"{format_inr(_sum(bills, 'outstanding'))}.")
+        if bills:
+            o = bills[0]
+            text += (f" Oldest: {o['bill_ref']} of {o['party']}, {o['age_days']} days, "
+                     f"{format_inr(o['outstanding'])}.")
+        if adv:
+            text += (f" Advances / on-account: {format_inr(-_sum(adv, 'outstanding'))} "
+                     f"({len(adv)} entries). Net due: {format_inr(_sum(rows, 'outstanding'))}.")
+        return text
     if rid == "ageing_summary":
         kind = "Receivables" if params.get("group") == "Sundry Debtors" else "Payables"
-        parts = "; ".join(f"{r['bucket']} days: {format_inr(r['outstanding'])} "
-                          f"({r['bill_count']} bills)" for r in rows)
-        return (f"{kind} ageing as on {params.get('as_of')} -- total "
+        parts = "; ".join(
+            (f"advances / on-account: {format_inr(-_d(r['outstanding']))} ({r['bill_count']})"
+             if r["bucket"] == "Advance" else
+             f"{r['bucket']} days: {format_inr(r['outstanding'])} ({r['bill_count']} bills)")
+            for r in rows)
+        return (f"{kind} ageing as on {params.get('as_of')} -- net due "
                 f"{format_inr(_sum(rows, 'outstanding'))}. {parts}.")
     if rid == "profit_loss_summary":
         r = rows[0]
@@ -105,8 +117,8 @@ def summarize(spec: ReportSpec, rows: list[dict], params: dict) -> str:
         a = [r for r in rows if r["side"] == "Assets"]
         l = [r for r in rows if r["side"] == "Liabilities"]
         return (f"Balance sheet as on {params.get('as_of')}: assets {format_inr(_sum(a, 'amount'))}, "
-                f"liabilities and capital {format_inr(_sum(l, 'amount'))} (before current-period "
-                f"profit, which sits in the P&L until closed).")
+                f"liabilities and capital {format_inr(_sum(l, 'amount'))} (profit to date is "
+                f"included in Profit & Loss A/c).")
     if rid == "day_book":
         return (f"{n} vouchers from {params.get('date_from')} to {params.get('date_to')}, "
                 f"total value {format_inr(_sum(rows, 'amount'))}.")
@@ -133,11 +145,18 @@ def summarize(spec: ReportSpec, rows: list[dict], params: dict) -> str:
 
 
 # --------------------------------------------------------- grounding
-_NUM = re.compile(r"(?<![\w\[])-?\d[\d,]*(?:\.\d+)?")
+# Any digit run not glued to another digit -- including "INR750000" and "Rs.5".
+_NUM = re.compile(r"(?<![\d.,])-?\d[\d,]*(?:\.\d+)?")
+# Amounts written with a scale word or exponent can't be checked digit by digit,
+# so they are never allowed in a model explanation.
+_SCALED = re.compile(
+    r"\b(?:lakhs?|lacs?|crores?|cr|k|mn|million|billion|bn|thousand|hundred|arab)\b|\d[eE][+-]?\d",
+    re.IGNORECASE)
 
 
 def _numbers_in(text: str) -> set[Decimal]:
     out: set[Decimal] = set()
+    text = TOKEN_RE.sub(" ", text)          # [PARTY_1] is a placeholder, not the number 1
     for m in _NUM.finditer(text):
         raw = m.group(0).replace(",", "")
         try:
@@ -154,6 +173,8 @@ def grounded(narrative: str, *, evidence: str) -> tuple[bool, str]:
     Small numbers are allowed through: they are day counts, list positions
     and bucket edges, and a hallucinated "3" cannot misstate a balance.
     """
+    if _SCALED.search(TOKEN_RE.sub(" ", narrative)):
+        return False, "uses a scaled amount (lakh/crore/k/exponent)"
     allowed_nums = _numbers_in(evidence)
     for n in _numbers_in(narrative):
         if abs(n) >= 100 and n not in allowed_nums:

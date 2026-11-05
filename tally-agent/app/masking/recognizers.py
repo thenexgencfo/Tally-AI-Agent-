@@ -64,6 +64,9 @@ class Recognizer:
     pattern: re.Pattern[str]
     priority: int
     validator: Callable[[str], bool] | None = None
+    # Which regex group is the sensitive value (0 = whole match). Lets a
+    # recognizer use surrounding words as context without masking them.
+    group: int = 0
     # Free-text recognizers run on narrations and user questions. Those marked
     # column_only are too false-positive-prone for free text and only run when
     # the value comes from a known-sensitive database column.
@@ -71,15 +74,23 @@ class Recognizer:
 
 
 RECOGNIZERS: list[Recognizer] = [
+    # Identifiers are matched in any letter case: people type "aabca1234k".
     Recognizer(
         "GSTIN",
-        re.compile(r"\b\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b"),
+        re.compile(r"\b\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b", re.IGNORECASE),
         priority=100,
     ),
     Recognizer(
         "PAN",
-        re.compile(r"\b[A-Z]{5}\d{4}[A-Z]\b"),
+        re.compile(r"\b[A-Z]{5}\d{4}[A-Z]\b", re.IGNORECASE),
         priority=90,
+    ),
+    Recognizer(
+        # "ABCDE 1234 F" -- spaced form, uppercase only (lowercase spaced text
+        # like "sales 2024 q" is too ordinary to treat as a PAN).
+        "PAN",
+        re.compile(r"\b[A-Z]{5}[\s-]\d{4}[\s-][A-Z]\b"),
+        priority=89,
     ),
     Recognizer(
         "AADHAAR",
@@ -89,7 +100,7 @@ RECOGNIZERS: list[Recognizer] = [
     ),
     Recognizer(
         "IFSC",
-        re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b"),
+        re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b", re.IGNORECASE),
         priority=85,
     ),
     Recognizer(
@@ -103,8 +114,18 @@ RECOGNIZERS: list[Recognizer] = [
         priority=70,
     ),
     Recognizer(
+        # A bank account number in free text, recognised by the words before it
+        # ("a/c 50200012345678", "Bank Account No. ...", "HDFC Bank 5020...").
+        "ACCOUNT",
+        re.compile(r"(?:a/c|a\.c\.|acct|account|bank)\b[^\d\n]{0,20}?(\d{9,18})(?!\d)",
+                   re.IGNORECASE),
+        priority=65,
+        group=1,
+    ),
+    Recognizer(
+        # Indian mobile numbers with or without +91 / 0091 / 91 / 0, any grouping.
         "PHONE",
-        re.compile(r"(?:\+91[\s-]?)?\b[6-9]\d{4}[\s-]?\d{5}\b"),
+        re.compile(r"(?<!\d)(?:(?:\+|00)?91[\s-]?|0)?[6-9](?:[\s-]?\d){9}(?!\d)"),
         priority=60,
     ),
     Recognizer(
@@ -125,11 +146,14 @@ def find_all(text: str, *, include_column_only: bool = False) -> list[Match]:
         if rec.column_only and not include_column_only:
             continue
         for m in rec.pattern.finditer(text):
-            value = m.group(0)
+            value = m.group(rec.group)
+            if not value:
+                continue
             if rec.validator and not rec.validator(value):
                 continue
+            start, end = m.span(rec.group)
             candidates.append(
-                (rec.priority, len(value), Match(m.start(), m.end(), value, rec.entity))
+                (rec.priority, len(value), Match(start, end, value, rec.entity))
             )
 
     # Highest priority wins; on a tie the longer match wins.

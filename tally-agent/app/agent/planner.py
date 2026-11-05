@@ -16,6 +16,7 @@ system degrades to "less clever", never to "unavailable".
 from __future__ import annotations
 
 import datetime as dt
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -27,7 +28,9 @@ from .llm import LLM, LLMUnavailable
 
 DEBTORS = "Sundry Debtors"
 CREDITORS = "Sundry Creditors"
-_PAYABLE = re.compile(r"payable|creditor|supplier|vendor|we owe|to pay|purchase bills?")
+_PAYABLE = re.compile(r"payable|creditor|supplier|vendor|we owe|(?:we|i)\s+(?:have|need)\s+to\s+pay"
+                      r"|purchase bills?|bills? (?:we|to) pay")
+_RECEIVABLE = re.compile(r"receivable|debtor|customer|client|owes? us|owed to us|to receive|collect")
 
 
 @dataclass
@@ -50,7 +53,7 @@ def _catalogue_text(reports: list[ReportSpec]) -> str:
     lines = []
     for r in reports:
         ps = ", ".join(
-            f"{p.name}:{p.type}{'' if p.required else '?'}" for p in r.params
+            f"{p.name}:{p.type}{'' if p.required else '?'}" for p in r.params if not p.internal
         )
         lines.append(f"- {r.id}({ps}) -- {r.description}")
     return "\n".join(lines)
@@ -148,7 +151,7 @@ def _tokens(question: str, entity: str = "PARTY") -> list[str]:
 def finalize(spec: ReportSpec, params: dict[str, Any], question: str, period: Period) -> Plan:
     """Normalise parameters for one report. Shared by the model and rules paths."""
     warnings: list[str] = []
-    known = {p.name: p for p in spec.params}
+    known = {p.name: p for p in spec.params if not p.internal}
     dropped = sorted(set(params) - set(known))
     if dropped:
         warnings.append(f"Ignored unexpected parameter(s): {', '.join(dropped)}")
@@ -156,6 +159,8 @@ def finalize(spec: ReportSpec, params: dict[str, Any], question: str, period: Pe
 
     party_tokens = _tokens(question)
     for p in spec.params:
+        if p.internal:
+            continue
         if p.type == "ledger":
             val = out.get(p.name)
             # A ledger parameter must be one of the placeholders from the question.
@@ -179,11 +184,14 @@ def finalize(spec: ReportSpec, params: dict[str, Any], question: str, period: Pe
             else:
                 out[p.name] = str(val).strip()
         elif p.type == "group":
-            val = str(out.get(p.name) or "")
-            out[p.name] = (
-                CREDITORS if _PAYABLE.search(question.lower()) or "creditor" in val.lower()
-                else DEBTORS
-            )
+            val = str(out.get(p.name) or "").lower()
+            ql = question.lower()
+            if _RECEIVABLE.search(ql):
+                out[p.name] = DEBTORS
+            elif _PAYABLE.search(ql) or "creditor" in val:
+                out[p.name] = CREDITORS
+            else:
+                out[p.name] = DEBTORS
         elif p.type == "date":
             # Code-resolved dates win whenever the question named a period.
             code_value = {
@@ -197,17 +205,22 @@ def finalize(spec: ReportSpec, params: dict[str, Any], question: str, period: Pe
         elif p.type == "int" and p.name in out:
             try:
                 out[p.name] = max(1, min(int(out[p.name]), 1000))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 out.pop(p.name)
         elif p.type == "numeric" and p.name in out:
             try:
-                out[p.name] = float(str(out[p.name]).replace(",", ""))
-            except ValueError:
+                val = float(str(out[p.name]).replace(",", ""))
+                if not math.isfinite(val):
+                    raise ValueError("not finite")
+                out[p.name] = val
+            except (TypeError, ValueError):
                 out.pop(p.name)
 
     if "date_from" in out and "date_to" in out and out["date_from"] > out["date_to"]:
         out["date_from"], out["date_to"] = out["date_to"], out["date_from"]
 
+    if period.warning:
+        warnings.append(period.warning)
     return Plan(spec.id, out, warnings=warnings, period=period,
                 wants_live=bool(re.search(r"\b(right now|live|this moment|real[- ]?time|latest)\b",
                                           question.lower())))
@@ -237,7 +250,8 @@ _RULES_GENERAL: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"trial balance|\btb\b"), "trial_balance"),
     (re.compile(r"balance ?sheet"), "balance_sheet"),
     (re.compile(r"ageing|aging|how old|age-?wise|bucket"), "ageing_summary"),
-    (re.compile(r"overdue|outstanding|unpaid|pending|receivables?|payables?|who owes|debtors|creditors"),
+    (re.compile(r"overdue|outstanding|unpaid|pending|receivables?|payables?|who owes|debtors|creditors"
+                r"|yet to (?:pay|receive)|(?:need|have) to pay|to be (?:paid|received)|\bdues?\b"),
      "bills_outstanding"),
     (re.compile(r"\bgst\b|cgst|sgst|igst|duties|output tax|input tax|tax liability"), "gst_summary"),
     (re.compile(r"cash|bank balance|bank accounts?|liquidity"), "cash_bank_balance"),

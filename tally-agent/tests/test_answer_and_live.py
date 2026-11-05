@@ -60,3 +60,10 @@ async def test_live_client_against_mock_tally():
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     v = await TallyLive("http://tally:9000").ledger_closing("Co", "Acme Interiors Pvt Ltd", client=client)
     assert v == Decimal("-152000.00") and "Acme Interiors Pvt Ltd" in seen["body"]
+
+
+@pytest.mark.parametrize("text", ["[PARTY_1] owes INR750000.", "[PARTY_1] owes ₹7.5 lakh.",
+                                  "[PARTY_1] owes ₹2 crore.", "[PARTY_1] owes 1e6 rupees.",
+                                  "[PARTY_1] owes 750k."])
+def test_grounding_rejects_scaled_and_glued_figures(text):
+    assert not grounded(text, evidence="[PARTY_1] {'closing': '550000.00'}")[0]

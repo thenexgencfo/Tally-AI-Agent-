@@ -12,6 +12,8 @@
 --   psql -U postgres -d tally -v role=loader_c1 -v pass='...' -f add_loader_company.sql
 -- =====================================================================
 \set ON_ERROR_STOP on
+-- Never write the CREATE/ALTER ROLE ... PASSWORD statements below to the server log.
+SET log_statement = 'none';
 
 SELECT (:'role' ~ '^loader_c[0-9]{1,6}$') AS role_ok \gset
 \if :role_ok
@@ -33,4 +35,10 @@ SELECT format('GRANT USAGE ON SCHEMA %I TO tally_owner', :'role') \gexec
 SELECT format('GRANT SELECT ON ALL TABLES IN SCHEMA %I TO tally_owner', :'role') \gexec
 SELECT format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT ON TABLES TO tally_owner',
               :'role', :'role') \gexec
+-- Defence in depth: loader logins cannot create functions at all.
+-- (tally.fn_ingest also refuses anything but plain tables of built-in types.)
+REVOKE USAGE ON LANGUAGE plpgsql FROM PUBLIC;
+REVOKE USAGE ON LANGUAGE sql FROM PUBLIC;
+GRANT USAGE ON LANGUAGE plpgsql TO tally_owner;
+GRANT USAGE ON LANGUAGE sql TO tally_owner;
 \echo 'provisioned' :role

@@ -3,38 +3,63 @@
   "nodes": [
     {
       "parameters": {
-        "rule": { "interval": [ { "field": "minutes", "minutesInterval": 5 } ] }
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
       },
       "id": "a1b2c3d4-0001-4000-8000-000000000001",
       "name": "Every 5 minutes",
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
-      "position": [0, 0]
+      "position": [
+        0,
+        0
+      ]
     },
     {
       "parameters": {
         "url": "https://tally-agent.internal/healthz",
         "options": {
           "timeout": 10000,
-          "response": { "response": { "neverError": true } }
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
         }
       },
       "id": "a1b2c3d4-0001-4000-8000-000000000002",
       "name": "GET /healthz",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [220, 0]
+      "position": [
+        220,
+        0
+      ],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
           "conditions": [
             {
               "id": "c0000000-0000-4000-8000-000000000001",
               "leftValue": "={{ $json.status }}",
               "rightValue": "ok",
-              "operator": { "type": "string", "operation": "notEquals" }
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
             }
           ],
           "combinator": "and"
@@ -45,27 +70,71 @@
       "name": "Not OK?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [440, 0]
+      "position": [
+        440,
+        0
+      ]
     },
     {
       "parameters": {
         "chatId": "REPLACE_WITH_ADMIN_CHAT_ID",
-        "text": "=Tally Agent: {{ $json.status || 'unreachable' }}\nDatabase: {{ $json.db }} | Redis: {{ $json.redis }} | Model: {{ $json.llm }}\nSync failures: {{ $json.sync ? $json.sync.failed : '?' }} | Oldest sync: {{ $json.sync ? $json.sync.max_lag_minutes : '?' }} min",
+        "text": "=Tally Agent: {{ $json.status || 'UNREACHABLE' }}{{ $json.error ? ' - ' + ($json.error.message || '').slice(0, 120) : '' }}\nDatabase: {{ $json.db }} | Redis: {{ $json.redis }} | Model: {{ $json.llm }} | Users file: {{ $json.users_file }}\nSync failures: {{ $json.sync ? $json.sync.failed : '?' }} | Oldest sync: {{ $json.sync ? $json.sync.max_lag_minutes : '?' }} min",
         "additionalFields": {}
       },
       "id": "a1b2c3d4-0001-4000-8000-000000000004",
       "name": "Alert admin on Telegram",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [660, -80],
-      "credentials": { "telegramApi": { "id": "REPLACE", "name": "Tally Agent alerts bot" } }
+      "position": [
+        660,
+        -80
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE",
+          "name": "Tally Agent alerts bot"
+        }
+      }
     }
   ],
   "connections": {
-    "Every 5 minutes": { "main": [ [ { "node": "GET /healthz", "type": "main", "index": 0 } ] ] },
-    "GET /healthz": { "main": [ [ { "node": "Not OK?", "type": "main", "index": 0 } ] ] },
-    "Not OK?": { "main": [ [ { "node": "Alert admin on Telegram", "type": "main", "index": 0 } ], [] ] }
+    "Every 5 minutes": {
+      "main": [
+        [
+          {
+            "node": "GET /healthz",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET /healthz": {
+      "main": [
+        [
+          {
+            "node": "Not OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Not OK?": {
+      "main": [
+        [
+          {
+            "node": "Alert admin on Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
   },
-  "settings": { "executionOrder": "v1" },
+  "settings": {
+    "executionOrder": "v1"
+  },
   "pinData": {}
 }

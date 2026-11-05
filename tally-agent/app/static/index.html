@@ -11,6 +11,7 @@
   <h1>Tally Agent</h1>
   <span id="whoami" class="muted"></span>
   <span id="fresh" class="badge" hidden></span>
+  <button type="button" id="signout" class="link" hidden>Sign out</button>
 </header>
 
 <main>
@@ -49,6 +50,8 @@
       </form>
     </div>
 
+    <p id="error" class="error" role="alert" hidden></p>
+
     <section id="result" class="card" hidden>
       <p id="answer" class="answer"></p>
       <div id="explanation" class="explanation" hidden>
@@ -59,7 +62,6 @@
       <p id="meta" class="muted small"></p>
       <div class="table-wrap"><table id="rows"></table></div>
     </section>
-    <p id="error" class="error" hidden></p>
   </section>
 </main>
 <script src="/static/app.js"></script>

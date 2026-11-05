@@ -28,7 +28,7 @@ BEGIN
   FOREACH t IN ARRAY ARRAY[
       'mst_company','mst_group','mst_ledger','mst_vouchertype','mst_cost_centre',
       'mst_stock_item','trn_voucher','trn_accounting','trn_bill','trn_cost_centre',
-      'trn_inventory','sync_state'
+      'trn_inventory','sync_state','mst_opening_bill','trn_closingstock'
   ] LOOP
     EXECUTE format('ALTER TABLE tally.%I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE tally.%I FORCE ROW LEVEL SECURITY', t);

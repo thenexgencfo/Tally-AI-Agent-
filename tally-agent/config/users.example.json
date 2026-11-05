@@ -27,6 +27,7 @@
     "companies": [],
     "can_delegate": true,
     "force_masked": true,
+    "delegate_via": ["tg"],
     "key_sha256": "REPLACE"
   }
 ]

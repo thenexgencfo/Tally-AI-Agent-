@@ -36,9 +36,15 @@ function Write-Log([string]$Message) {
   Write-Host $line
 }
 
+function ConvertTo-B64([string]$Text) {
+  [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Text))
+}
+
 function Invoke-Psql([string]$Sql, [hashtable]$Vars) {
-  # Values travel as psql variables and are quoted by psql (:'name'), never
-  # spliced into SQL text.
+  # Every value is base64 (A-Z a-z 0-9 + / =) before it becomes an argument:
+  # Windows PowerShell 5.1 does not escape quotes inside native-command
+  # arguments, so raw text such as an error message could otherwise smuggle in
+  # extra psql options. The SQL decodes it with decode(:'x','base64').
   $argv = @("exec", "-i", $PostgresContainer, "psql", "-U", "tally_owner", "-d", "tally",
             "-v", "ON_ERROR_STOP=1", "-qtA")
   foreach ($k in $Vars.Keys) { $argv += @("-v", "$k=$($Vars[$k])") }
@@ -54,10 +60,14 @@ function Invoke-Loader($Company) {
   Remove-Item $errLog -ErrorAction SilentlyContinue
   $p = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "run.bat" -WorkingDirectory $dir `
          -NoNewWindow -PassThru
+  # Windows PowerShell 5.1: without touching .Handle now, ExitCode is unreadable later.
+  $null = $p.Handle
   if (-not $p.WaitForExit($LoaderTimeoutSeconds * 1000)) {
-    $p.Kill()
+    # Kill the whole tree: killing cmd.exe alone leaves node.exe (the loader) running.
+    & taskkill.exe /T /F /PID $p.Id | Out-Null
     throw "loader timed out after $LoaderTimeoutSeconds s (large batch? see loader batchsize)"
   }
+  $p.WaitForExit()
   $err = if (Test-Path $errLog) { (Get-Content $errLog -Raw) } else { "" }
   if ($p.ExitCode -ne 0 -or ($err -and $err.Trim())) {
     $snippet = if ($err) { $err.Substring(0, [Math]::Min(400, $err.Length)) } else { "" }
@@ -65,9 +75,11 @@ function Invoke-Loader($Company) {
   }
 }
 
-$companies = Get-Content $Config -Raw | ConvertFrom-Json
+$companies = Get-Content $Config -Raw -Encoding UTF8 | ConvertFrom-Json
 foreach ($c in $companies) {
-  if ($c.name -match '["\r\n]') { throw "company name for id $($c.company_id) contains a quote or newline" }
+  foreach ($d in @($c.fy_from, $c.fy_to)) {
+    if ($d -and "$d" -notmatch '^\d{4}-\d{2}-\d{2}$') { throw "company $($c.company_id): dates must be YYYY-MM-DD" }
+  }
 }
 
 try {
@@ -76,14 +88,16 @@ try {
       $started = Get-Date
       try {
         Invoke-Loader $c
-        $rows = Invoke-Psql "SELECT tally.fn_ingest(:cid, :'sch', :'cname', NULLIF(:'fyf','')::date, NULLIF(:'fyt','')::date);" @{
-          cid = [int]$c.company_id; sch = "loader_c$([int]$c.company_id)"; cname = $c.name
+        $rows = Invoke-Psql ("SELECT tally.fn_ingest(:cid, :'sch', convert_from(decode(:'cname','base64'),'UTF8'), " +
+                             "NULLIF(:'fyf','')::date, NULLIF(:'fyt','')::date);") @{
+          cid = [int]$c.company_id; sch = "loader_c$([int]$c.company_id)"; cname = (ConvertTo-B64 $c.name)
           fyf = "$($c.fy_from)"; fyt = "$($c.fy_to)" }
         Write-Log ("company {0}: ok, {1} rows, {2:n1}s" -f $c.company_id, $rows, ((Get-Date) - $started).TotalSeconds)
       } catch {
         $msg = $_.Exception.Message -replace '[\r\n]+', ' '
         Write-Log "company $($c.company_id): FAILED - $msg"
-        try { Invoke-Psql "SELECT tally.fn_mark_sync_failed(:cid, :'err');" @{ cid = [int]$c.company_id; err = $msg } | Out-Null }
+        try { Invoke-Psql "SELECT tally.fn_mark_sync_failed(:cid, convert_from(decode(:'err','base64'),'UTF8'));" @{
+                cid = [int]$c.company_id; err = (ConvertTo-B64 $msg) } | Out-Null }
         catch { Write-Log "  could not record failure: $($_.Exception.Message)" }
       }
     }

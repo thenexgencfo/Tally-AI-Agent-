@@ -39,3 +39,6 @@ CREATE TABLE IF NOT EXISTS trn_cost_centre (guid varchar(64), ledger varchar(102
 CREATE TABLE IF NOT EXISTS trn_inventory (guid varchar(64), item varchar(1024), quantity decimal(15,4),
   rate decimal(15,4), amount decimal(17,2), additional_amount decimal(17,2), discount_amount decimal(17,2),
   godown varchar(1024), tracking_number varchar(256), order_number varchar(256), order_duedate date);
+CREATE TABLE IF NOT EXISTS mst_opening_bill_allocation (ledger varchar(1024), opening_balance decimal(17,4),
+  bill_date date, name varchar(1024), bill_credit_period int, is_advance smallint);
+CREATE TABLE IF NOT EXISTS trn_closingstock_ledger (ledger varchar(1024), stock_date date, stock_value decimal(17,2));

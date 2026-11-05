@@ -38,7 +38,13 @@ from .masking import MaskingEngine, NameIndex
 from .reports.registry import REPORTS, ReportError, ReportSpec, run_report
 
 _SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
-PARTY_GROUPS = ("sundry debtors", "sundry creditors")
+# Ledgers under these groups (at any depth) are named after people or firms
+# and are masked. Bank, cash, tax, stock and P&L ledgers stay readable.
+PARTY_GROUPS = frozenset({
+    "sundry debtors", "sundry creditors", "capital account", "loans (liability)",
+    "secured loans", "unsecured loans", "loans & advances (asset)", "deposits (asset)",
+})
+STOCK_REPORTS = frozenset({"trial_balance", "balance_sheet", "profit_loss", "profit_loss_summary"})
 DISPLAY_ROWS = 100
 
 
@@ -77,6 +83,7 @@ class CompanyContext:
     last_sync_at: dt.datetime | None
     lag_minutes: float | None
     sync_status: str | None
+    stock_gap: bool = False
 
 
 def _jsonable(v: Any) -> Any:
@@ -142,8 +149,17 @@ class AgentService:
             raise Denied("you do not have access to this company")
 
     async def company_context(self, company_id: int) -> CompanyContext:
+        # Freshness first: it is never cached, and it also decides whether the
+        # cached name dictionary is still current (a new sync may add parties,
+        # who must be masked from their very first question).
+        async with db.company_scope([company_id]) as con:
+            fresh = await con.fetchrow(
+                "SELECT last_sync_at, lag_minutes, last_status FROM tally.v_sync_freshness "
+                "WHERE company_id = $1", company_id)
+        stamp = fresh["last_sync_at"] if fresh else None
+
         hit = self._ctx_cache.get(company_id)
-        if hit and time.monotonic() - hit[0] < 60:
+        if hit and hit[1].last_sync_at == stamp and time.monotonic() - hit[0] < 300:
             ctx = hit[1]
         else:
             async with db.company_scope([company_id]) as con:
@@ -152,43 +168,47 @@ class AgentService:
                 if comp is None:
                     raise Denied("company not found")
                 ledgers = await con.fetch(
-                    "SELECT ledger, lower(primary_group) AS pg FROM tally.v_ledger_group "
+                    "SELECT ledger, group_path FROM tally.v_ledger_group "
                     "WHERE company_id = $1", company_id)
+                stock_gap = await con.fetchval("SELECT tally.fn_stock_gap($1)", company_id)
                 voucher_parties = await con.fetch(
                     "SELECT DISTINCT party_name FROM tally.trn_voucher "
                     "WHERE company_id = $1 AND party_name <> ''", company_id)
-            parties = [r["ledger"] for r in ledgers if r["pg"] in PARTY_GROUPS]
+            parties = [r["ledger"] for r in ledgers
+                       if PARTY_GROUPS.intersection(r["group_path"] or [])]
             parties += [r["party_name"] for r in voucher_parties]
             party_set = set(parties)
             others = [r["ledger"] for r in ledgers if r["ledger"] not in party_set]
             ctx = CompanyContext(company_id, comp["name"],
-                                 NameIndex.build(parties, others), None, None, None)
+                                 NameIndex.build(parties, others, company=comp["name"]),
+                                 stamp, None, None, bool(stock_gap))
             self._ctx_cache[company_id] = (time.monotonic(), ctx)
 
-        # Freshness is never cached: it is the one thing that must be current.
-        async with db.company_scope([company_id]) as con:
-            fresh = await con.fetchrow(
-                "SELECT last_sync_at, lag_minutes, last_status FROM tally.v_sync_freshness "
-                "WHERE company_id = $1", company_id)
         if fresh:
             ctx.last_sync_at = fresh["last_sync_at"]
             ctx.lag_minutes = float(fresh["lag_minutes"]) if fresh["lag_minutes"] is not None else None
             ctx.sync_status = fresh["last_status"]
         return ctx
 
-    async def _fetch(self, spec: ReportSpec, company_id: int, params: dict) -> list[dict]:
+    async def _fetch(self, spec: ReportSpec, company_id: int, params: dict,
+                     sync_stamp: str = "") -> tuple[list[dict], bool]:
         key = None
         if self.redis is not None and not spec.sensitive:
             digest = hashlib.sha256(json.dumps(params, sort_keys=True, default=str).encode()).hexdigest()
-            key = f"rc:{company_id}:{spec.id}:{digest}"
+            # Keyed on the sync time: a new sync makes old cached rows unreachable,
+            # so cached figures can never be labelled with a newer "as of".
+            key = f"rc:{company_id}:{sync_stamp}:{spec.id}:{digest}"
             cached = await self.redis.get(key)
             if cached:
-                return json.loads(cached)
+                data = json.loads(cached)
+                return data["rows"], data["truncated"]
         async with db.company_scope([company_id]) as con:
-            rows = _normalise(await run_report(con, spec, company_id, params, max_rows=self.max_rows))
+            raw, truncated = await run_report(con, spec, company_id, params, max_rows=self.max_rows)
+        rows = _normalise(raw)
         if key is not None:
-            await self.redis.set(key, json.dumps(rows), ex=self.cache_ttl)
-        return rows
+            await self.redis.set(key, json.dumps({"rows": rows, "truncated": truncated}),
+                                 ex=self.cache_ttl)
+        return rows, truncated
 
     async def _audit(self, **fields: Any) -> None:
         fields["params"] = json.dumps(fields.get("params") or {}, default=str)
@@ -205,9 +225,13 @@ class AgentService:
                 raise AuditFailure("audit log unavailable; refusing to return data") from exc
 
     # ---------------------------------------------------------- public API
-    async def ask(self, user: User, question: str, company_id: int,
+    async def ask(self, user: User, question: str, company_id: int | None,
                   session_id: str | None = None, client_ip: str | None = None) -> AskResult:
         t0 = time.monotonic()
+        if company_id is None:
+            if not user.companies:
+                raise Denied("you do not have access to any company")
+            company_id = user.companies[0]
         sid, sess = self.session_for(user, session_id)
         base_audit = dict(user_id=user.audit_id, user_role=user.role, client_ip=client_ip,
                           company_id=int(company_id), question_hash=self._hash(question),
@@ -249,10 +273,17 @@ class AgentService:
         if spec is None:
             raise ReportError(f"unknown report '{report_id}'")
         base_audit = dict(user_id=user.audit_id, user_role=user.role, client_ip=client_ip,
-                          company_id=int(company_id), llm_model=None)
-        self._authorise(user, company_id)
-        if not spec.allowed_for(user.role):
-            raise Denied(f"report '{report_id}' requires role {spec.min_role}")
+                          company_id=int(company_id), llm_model=None,
+                          question_hash=self._hash(f"[direct] {spec.id}"))
+        try:
+            self._authorise(user, company_id)
+            if not spec.allowed_for(user.role):
+                raise Denied(f"report '{report_id}' requires role {spec.min_role}")
+        except Denied as exc:
+            await self._audit(**base_audit, question_masked=f"[direct] {spec.id}",
+                              report_id=spec.id, outcome="denied", error_detail=str(exc),
+                              latency_ms=int((time.monotonic() - t0) * 1000))
+            raise
 
         ctx = await self.company_context(int(company_id))
         # Tokenise the user's real names so the audit trail stays masked and the
@@ -279,13 +310,34 @@ class AgentService:
     async def _execute(self, user: User, ctx: CompanyContext, spec: ReportSpec, plan: Plan,
                        sid: str, sess: str, masked_question: str, base_audit: dict,
                        t0: float, *, narrate: bool) -> AskResult:
+        """Run a plan. Any failure after this point is audited too."""
+        try:
+            return await self._execute_inner(user, ctx, spec, plan, sid, sess, masked_question,
+                                              base_audit, t0, narrate=narrate)
+        except (AuditFailure, ReportError):
+            raise                       # already audited (or the audit itself failed)
+        except Exception as exc:
+            try:
+                await self._audit(**base_audit, question_masked=masked_question, report_id=spec.id,
+                                  params=plan.params, outcome="error",
+                                  error_detail=type(exc).__name__,
+                                  latency_ms=int((time.monotonic() - t0) * 1000))
+            except AuditFailure:
+                pass
+            raise
+
+    async def _execute_inner(self, user: User, ctx: CompanyContext, spec: ReportSpec, plan: Plan,
+                             sid: str, sess: str, masked_question: str, base_audit: dict,
+                             t0: float, *, narrate: bool) -> AskResult:
         warnings = list(plan.warnings)
         real_params = await self.engine.unmask_params(plan.params, sess)
 
         live_used = False
         data_as_of: dt.datetime | None = ctx.last_sync_at
         try:
-            rows = await self._fetch(spec, ctx.company_id, real_params)
+            rows, truncated = await self._fetch(
+                spec, ctx.company_id, real_params,
+                ctx.last_sync_at.isoformat() if ctx.last_sync_at else "")
         except ReportError as exc:
             await self._audit(**base_audit, question_masked=masked_question, report_id=spec.id,
                               params=plan.params, outcome="error", error_detail=str(exc),
@@ -312,6 +364,13 @@ class AgentService:
                 warnings.append("The last Tally sync FAILED. Figures are from the last good sync.")
             if ctx.lag_minutes is not None and ctx.lag_minutes > self.stale_warn_minutes:
                 warnings.append(f"Data was last synced {ctx.lag_minutes:.0f} minutes ago.")
+
+        if truncated:
+            warnings.append(f"This report has more than {self.max_rows:,} rows: the figures "
+                            "cover only the first ones. Narrow the period for a complete answer.")
+        if spec.id in STOCK_REPORTS and ctx.stock_gap:
+            warnings.append("Closing stock is kept in inventory and was not exported as ledger "
+                            "values, so stock is not included in these figures.")
 
         masked_rows = await self.engine.mask_rows(rows, sess, names=ctx.names)
         summary = summarize(spec, masked_rows, plan.params)

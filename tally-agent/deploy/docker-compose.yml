@@ -3,7 +3,11 @@
 #
 # Network layout
 #   backend  (internal: true) postgres, redis, ollama, agent  -- NO internet route
-#   frontend                   caddy <-> agent
+#   frontend (internal: true) caddy <-> agent                  -- NO internet route
+#   edge                       caddy only: carries the published HTTPS port
+#   dbhost                     postgres only: carries the loopback port the Windows
+#                              sync tool uses (Docker ignores port mappings on
+#                              containers attached only to internal networks)
 #   egress                     only the one-off model download (profile "setup")
 #
 # Image tags are pinned for reproducibility. Bump them to current patch
@@ -32,9 +36,10 @@ services:
       - ../sql:/opt/tally-agent/sql:ro
       - ../scripts:/opt/tally-agent/scripts:ro
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
-    # Published ONLY on loopback, for the sync runner on this Windows machine.
+    # Published ONLY on loopback, for tally-database-loader on this Windows PC.
+    # Needs the non-internal "dbhost" network, or Docker silently drops it.
     ports: ["127.0.0.1:5432:5432"]
-    networks: [backend]
+    networks: [backend, dbhost]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d tally"]
       interval: 10s
@@ -102,8 +107,8 @@ services:
       SYNC_STALE_WARN_MINUTES: ${SYNC_STALE_WARN_MINUTES:-10}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-30}
       REFERENCE_DATE: ${REFERENCE_DATE:-}
-      # Live Tally lookups need a route to the host, which the internal network
-      # deliberately lacks. Leave empty unless you add a host-facing network.
+      # Live Tally lookups need a route to the host, which the agent deliberately
+      # lacks (both its networks are internal). Leave empty unless you add one.
       TALLY_LIVE_URL: ${TALLY_LIVE_URL:-}
     volumes:
       - ../config/users.json:/config/users.json:ro
@@ -126,7 +131,7 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    networks: [frontend]
+    networks: [frontend, edge]
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     security_opt: ["no-new-privileges:true"]
@@ -141,4 +146,7 @@ networks:
   backend:
     internal: true
   frontend:
+    internal: true
+  edge:
+  dbhost:
   egress:

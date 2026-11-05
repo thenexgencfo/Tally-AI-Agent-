@@ -70,7 +70,7 @@ every request written to an append-only audit log first; if that fails, nothing 
 | `sync/` | Windows sync runner and example loader and company configs |
 | `scripts/` | DB setup, API keys, company provisioning, encrypted backup and restore, test runner |
 | `n8n/` | Health/sync alert workflow and the Telegram bot workflow |
-| `tests/` | 97 tests, covering the security claims end to end. See `SECURITY.md` |
+| `tests/` | 140+ tests, covering the security claims end to end. See `SECURITY.md` |
 
 ## Reports available
 
@@ -81,7 +81,7 @@ To add a report, write a SQL function in `sql/03_reports.sql`, add an entry to `
 ## What has been verified, and what hasn't
 
 **Verified here**
-- All 97 tests pass against real PostgreSQL 16 and Redis. The demo company's figures were checked by hand: the trial balance balances at ₹10,51,000, net profit is ₹1,49,000, and the ageing buckets match.
+- All tests pass against real PostgreSQL 16 and Redis. The demo company's figures were checked by hand: the trial balance balances at ₹10,51,000, net profit is ₹1,49,000, and the ageing buckets match.
 - The ingest bridge works against a schema built from tally-database-loader's published DDL, and re-running it is idempotent.
 - The full Docker stack (Postgres, Redis, agent, Caddy) built and answered questions over TLS: correct answers, masked audit rows, 403 on cross-company requests, 413 on oversized bodies, and all security headers present.
 
@@ -91,7 +91,7 @@ To add a report, write a SQL function in `sql/03_reports.sql`, add an entry to `
 3. **The Windows scripts** (`*.ps1`) were written for Windows PowerShell 5.1 but never executed: there was no Windows machine available. Run each one once by hand.
 4. **The n8n workflows** were written by hand. After importing, re-select the credentials and check each node.
 5. **Live Tally lookups** (for "right now" questions) use a standard Tally XML Export request that hasn't been tested against your Tally release. They're off by default.
-6. **Cancelled and optional vouchers.** The loader's output has no flags for these. Confirm its export excludes them, or the totals will be off.
+6. **Closing stock kept only in inventory.** If a company values stock through inventory (not closing-stock values on a Stock-in-Hand ledger), the loader does not export a stock value, so P&L, trial balance and balance sheet exclude it; answers say so when this applies.
 
 ## Install on the Windows PC
 

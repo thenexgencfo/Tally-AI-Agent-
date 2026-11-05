@@ -107,11 +107,18 @@ def test_removing_a_user_revokes_access_without_restart(client):
         os.utime(path, ns=(time.time_ns(), time.time_ns() + 1_000_000))
         assert client.get("/v1/me", headers=auth("junior")).status_code == 401
         assert client.get("/v1/me", headers=auth("partner")).status_code == 200
-        # A corrupt file keeps the last good list instead of locking everyone out.
-        with open(path, "w") as f:
-            f.write("{not json")
-        os.utime(path, ns=(time.time_ns(), time.time_ns() + 2_000_000))
-        assert client.get("/v1/me", headers=auth("partner")).status_code == 200
+        # A broken edit must NOT fall back to the old list (which would keep a
+        # just-removed person in): everyone is refused until it is fixed.
+        for broken in ['{not json', json.dumps(users)[:-1] + ',]',
+                       json.dumps([{**users[0], "companies": 1}]),
+                       json.dumps([{**users[0], "key_sha256": None}]),
+                       json.dumps([{**users[0], "may_unmaks": True}])]:
+            with open(path, "w") as f:
+                f.write(broken)
+            os.utime(path, ns=(time.time_ns(), time.time_ns() + 2_000_000))
+            r = client.get("/v1/me", headers=auth("partner"))
+            assert r.status_code == 503, broken
+            assert client.get("/healthz").json()["users_file"] == "invalid"
     finally:
         with open(path, "w") as f:
             f.write(original)
@@ -134,3 +141,36 @@ def test_shipped_example_file_loads():
     from app.auth import UserStore
     store = UserStore.load("config/users.example.json")
     assert store.by_id == {} and store.by_telegram == {}
+
+
+def test_bridge_limited_to_its_delegation_kind(client):
+    # The Telegram bridge may act only as "tg:" users, not pick any user id.
+    assert client.get("/v1/me", headers={**auth("tg"), "X-Act-As": "user:partner.test"}).status_code == 401
+    assert client.get("/v1/me", headers={**auth("tg"), "X-Act-As": "tg:111"}).status_code == 200
+
+
+def test_bridge_rate_limit_is_shared_across_impersonated_users(client, monkeypatch):
+    import redis as sync_redis
+    from app.config import settings
+    r = sync_redis.from_url(settings.redis_url)
+    for k in r.scan_iter("rl:*"):
+        r.delete(k)
+    monkeypatch.setattr(app.state.limiter, "_limit", 3)
+    codes = [client.get("/v1/me", headers={**auth("svc"), "X-Act-As": f"tg:{t}"}).status_code
+             for t in ("111", "333", "111", "333", "111")]
+    assert codes[:3] == [200, 200, 200] and 429 in codes[3:]
+
+
+def test_ask_without_company_uses_users_first_company(client):
+    r = client.post("/v1/ask", headers=auth("partner"), json={"question": "trial balance"})
+    assert r.status_code == 200 and r.json()["report_id"] == "trial_balance"
+
+
+def test_non_finite_numbers_never_crash(client):
+    for body in ('{"report_id":"top_parties","company_id":1,"params":{"date_from":"2024-04-01",'
+                 '"date_to":"2025-03-31","limit":1e999}}',
+                 '{"report_id":"voucher_search","company_id":1,"params":{"date_from":"2024-04-01",'
+                 '"date_to":"2025-03-31","min_amount":1e999}}'):
+        r = client.post("/v1/report", content=body,
+                        headers={**auth("partner"), "Content-Type": "application/json"})
+        assert r.status_code in (200, 400), r.text      # dropped or rejected -- never a 500

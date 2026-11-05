@@ -5,10 +5,25 @@ const $ = (id) => document.getElementById(id);
 const NUMERIC = new Set(["debit","credit","amount","balance","closing","outstanding",
   "total_amount","net_profit","total_income","total_expense","running_balance","age_days",
   "bill_count","voucher_count","credit_limit"]);
-const state = { key: null, session: null, reports: [] };
+const COUNTS = new Set(["age_days","bill_count","voucher_count","credit_days"]);
+const state = { key: null, session: null, reports: [], seq: 0, refresh: null };
 
 function store(k, v) { try { sessionStorage.setItem(k, v); } catch (_) {} }
 function load(k) { try { return sessionStorage.getItem(k); } catch (_) { return null; } }
+function forget(k) { try { sessionStorage.removeItem(k); } catch (_) {} }
+
+// FastAPI validation errors arrive as a list of {loc, msg}; make them readable.
+function errorText(data, status) {
+  const d = data && data.detail;
+  if (Array.isArray(d)) {
+    return d.map((e) => {
+      const field = Array.isArray(e.loc) ? e.loc[e.loc.length - 1] : "";
+      return (field ? field + ": " : "") + (e.msg || "invalid value");
+    }).join("; ");
+  }
+  if (typeof d === "string" && d) return d;
+  return "Request failed (HTTP " + status + ")";
+}
 
 async function api(path, body) {
   const res = await fetch(path, {
@@ -18,7 +33,7 @@ async function api(path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+  if (!res.ok) throw new Error(errorText(data, res.status));
   return data;
 }
 
@@ -28,20 +43,25 @@ function inr(v) {
   return n.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function freshness(lag, status) {
+function freshness(lag, status, live) {
   const b = $("fresh");
   b.hidden = false;
-  b.className = "badge " + (status === "failed" || lag > 10 ? "stale" : "ok");
-  b.textContent = status === "failed" ? "Last sync failed"
+  const stale = status === "failed" || (lag != null && lag > 10);
+  b.className = "badge " + (stale ? "stale" : "ok");
+  b.textContent = live ? "Live from Tally"
+    : status === "failed" ? "Last sync failed"
     : lag == null ? "Sync status unknown" : `Synced ${Math.round(lag)} min ago`;
 }
 
-async function connect(key) {
-  state.key = key;
+function companyName() {
+  const o = $("company").selectedOptions[0];
+  return o ? o.textContent : "";
+}
+
+async function refreshCompanies() {
   const me = await api("/v1/me");
-  store("tak", key);
-  $("whoami").textContent = `${me.id} · ${me.role}${me.may_unmask ? "" : " · masked view"}`;
   const sel = $("company");
+  const keep = sel.value;
   sel.replaceChildren();
   for (const c of me.companies) {
     const o = document.createElement("option");
@@ -49,7 +69,21 @@ async function connect(key) {
     o.dataset.lag = c.lag_minutes ?? ""; o.dataset.status = c.sync_status ?? "";
     sel.appendChild(o);
   }
-  if (sel.options.length) updateFresh();
+  if (keep && [...sel.options].some((o) => o.value === keep)) sel.value = keep;
+  showCompanyFreshness();
+  return me;
+}
+
+function showCompanyFreshness() {
+  const o = $("company").selectedOptions[0];
+  if (o) freshness(o.dataset.lag === "" ? null : Number(o.dataset.lag), o.dataset.status, false);
+}
+
+async function connect(key) {
+  state.key = key;
+  const me = await refreshCompanies();
+  store("tak", key);
+  $("whoami").textContent = `${me.id} · ${me.role}${me.may_unmask ? "" : " · masked view"}`;
   state.reports = await api("/v1/reports");
   const rs = $("report-id");
   rs.replaceChildren();
@@ -60,12 +94,36 @@ async function connect(key) {
   renderParams();
   $("signin").hidden = true;
   $("workspace").hidden = false;
+  $("signout").hidden = false;
+  clearInterval(state.refresh);
+  state.refresh = setInterval(() => { refreshCompanies().catch(() => {}); }, 60000);
 }
 
-function updateFresh() {
-  const o = $("company").selectedOptions[0];
-  if (o) freshness(o.dataset.lag === "" ? null : Number(o.dataset.lag), o.dataset.status);
-  state.session = null;  // placeholders are per company conversation
+function signOut() {
+  clearInterval(state.refresh);
+  forget("tak");
+  state.key = null; state.session = null; state.reports = []; state.seq++;
+  $("key").value = "";
+  clearResult();
+  $("workspace").hidden = true;
+  $("signout").hidden = true;
+  $("fresh").hidden = true;
+  $("whoami").textContent = "";
+  $("signin").hidden = false;
+}
+
+function clearResult() {
+  $("result").hidden = true;
+  $("rows").replaceChildren();
+  $("answer").textContent = "";
+  $("error").hidden = true;
+}
+
+function onCompanyChange() {
+  state.seq++;            // any reply still in flight belongs to the old company
+  state.session = null;   // placeholders are per company conversation
+  clearResult();
+  showCompanyFreshness();
 }
 
 function renderParams() {
@@ -85,6 +143,8 @@ function renderParams() {
     } else {
       input = document.createElement("input");
       input.type = p.type === "date" ? "date" : (p.type === "int" || p.type === "numeric") ? "number" : "text";
+      if (p.type === "numeric") input.step = "any";
+      if (p.type === "int") input.step = "1";
       if (p.default != null) input.value = p.default;
     }
     input.name = p.name;
@@ -93,7 +153,7 @@ function renderParams() {
   }
 }
 
-function show(res) {
+function show(res, company) {
   $("error").hidden = true;
   $("result").hidden = false;
   $("answer").textContent = res.answer;
@@ -106,6 +166,7 @@ function show(res) {
   }
   const asOf = res.data_as_of ? new Date(res.data_as_of).toLocaleString("en-IN") : "unknown";
   $("meta").textContent = [
+    company && `Company: ${company}`,
     res.report_title && `Report: ${res.report_title}`,
     `Data as of ${asOf}${res.live ? " (live from Tally)" : ""}`,
     `Routed by: ${res.source}`,
@@ -125,30 +186,51 @@ function show(res) {
       for (const c of res.columns) {
         const td = tr.insertCell();
         const v = row[c];
-        if (NUMERIC.has(c) && v !== null && v !== "") { td.className = "num"; td.textContent = c.endsWith("days") || c.endsWith("count") ? String(v) : inr(v); }
-        else td.textContent = v == null ? "" : String(v);
+        if (NUMERIC.has(c) && v !== null && v !== "") {
+          td.className = "num";
+          td.textContent = COUNTS.has(c) ? String(v) : inr(v);
+        } else td.textContent = v == null ? "" : String(v);
       }
     }
   }
   if (res.session_id) state.session = res.session_id;
+  if (res.live || res.lag_minutes != null) freshness(res.lag_minutes, null, res.live);
 }
 
-function fail(err) { $("error").hidden = false; $("error").textContent = err.message; }
+function fail(err) {
+  clearResult();          // never leave an old answer under a new error
+  $("error").hidden = false;
+  $("error").textContent = err.message;
+}
 
-async function busy(form, fn) {
+async function run(form, fn) {
   const btn = form.querySelector("button[type=submit]");
+  const seq = ++state.seq;
+  const company = companyName();
   btn.disabled = true;
-  try { await fn(); } catch (e) { fail(e); } finally { btn.disabled = false; }
+  $("company").disabled = true;
+  clearResult();
+  try {
+    const res = await fn();
+    if (seq === state.seq) show(res, company);   // ignore replies for a superseded request
+  } catch (e) {
+    if (seq === state.seq) fail(e);
+  } finally {
+    btn.disabled = false;
+    $("company").disabled = false;
+  }
 }
 
 $("signin-form").addEventListener("submit", (e) => {
   e.preventDefault();
   $("signin-error").hidden = true;
   connect($("key").value.trim()).catch((err) => {
+    state.key = null;
     $("signin-error").hidden = false; $("signin-error").textContent = err.message;
   });
 });
-$("company").addEventListener("change", updateFresh);
+$("signout").addEventListener("click", signOut);
+$("company").addEventListener("change", onCompanyChange);
 $("report-id").addEventListener("change", renderParams);
 for (const b of document.querySelectorAll(".tabs button")) {
   b.addEventListener("click", () => {
@@ -160,9 +242,9 @@ for (const b of document.querySelectorAll(".tabs button")) {
 $("ask-form").addEventListener("submit", (e) => {
   e.preventDefault();
   const q = $("question").value.trim();
-  if (!q) return;
-  busy(e.target, async () => show(await api("/v1/ask", {
-    question: q, company_id: Number($("company").value), session_id: state.session })));
+  if (q.length < 2) { fail(new Error("Please type a question.")); return; }
+  run(e.target, () => api("/v1/ask", {
+    question: q, company_id: Number($("company").value), session_id: state.session }));
 });
 $("report-form").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -170,9 +252,9 @@ $("report-form").addEventListener("submit", (e) => {
   for (const el of $("report-params").querySelectorAll("input,select")) {
     if (el.value !== "") params[el.name] = el.type === "number" ? Number(el.value) : el.value;
   }
-  busy(e.target, async () => show(await api("/v1/report", {
+  run(e.target, () => api("/v1/report", {
     report_id: $("report-id").value, company_id: Number($("company").value), params,
-    session_id: state.session })));
+    session_id: state.session }));
 });
 const saved = load("tak");
-if (saved) connect(saved).catch(() => {});
+if (saved) connect(saved).catch(() => { forget("tak"); state.key = null; });

@@ -49,3 +49,6 @@ table { border-collapse: collapse; width: 100%; font-size: 14px; }
 th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
 th { color: var(--muted); font-weight: 600; }
+button.link { margin-left: auto; background: transparent; color: var(--accent);
+  border: 1px solid var(--line); padding: 4px 12px; }
+select:disabled { opacity: .6; }

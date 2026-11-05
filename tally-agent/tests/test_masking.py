@@ -70,3 +70,43 @@ async def test_redis_vault_expires(redis_client, names):
     assert await eng.unmask_text(m.text, "u:abc12345") == "Acme Interiors Pvt Ltd"
     ttl = await redis_client.ttl("mask:u:abc12345:r")
     assert 0 < ttl <= 60
+
+
+@pytest.mark.parametrize("text,leak", [
+    ("PAN is aabca1234k", "aabca1234k"),
+    ("gstin 27aabca1234k1z5", "27aabca1234k1z5"),
+    ("PAN ABCDE 1234 F", "ABCDE 1234 F"),
+    ("call +919820011223", "9820011223"),
+    ("call 09820011223", "9820011223"),
+    ("call 98200 112 23", "98200 112 23"),
+    ("NEFT to a/c 50200012345678", "50200012345678"),
+    ("HDFC Bank Account No. 50200012345678", "50200012345678"),
+    ("ifsc hdfc0001234", "hdfc0001234"),
+])
+async def test_review_formats_are_masked(engine, text, leak):
+    assert leak not in (await engine.mask_text(text, "s")).text
+
+
+async def test_ordinary_text_untouched(engine):
+    t = "sales 2024 q1 total 150000.00 on 2024-04-10, invoice SI-001, 10,51,000.00"
+    assert (await engine.mask_text(t, "s")).text == t
+
+
+async def test_name_variants_and_company_name(engine):
+    idx = NameIndex.build(["M/s Gupta Agencies", "R K Sharma Traders", "Acme Interiors Pvt Ltd"],
+                          ["Design Fees", "Sales"], company="White Design Consultants")
+    for q, canon in [("Gupta Agencies owes?", "M/s Gupta Agencies"),
+                     ("Sharma Traders statement", "R K Sharma Traders"),
+                     ("acme interiors balance", "Acme Interiors Pvt Ltd")]:
+        m = await engine.mask_text(q, "s", names=idx)
+        assert "[PARTY_" in m.text
+        tok = m.text[m.text.index("["):m.text.index("]") + 1]
+        assert await engine.unmask_text(tok, "s") == canon
+    m = await engine.mask_text("profit of White Design Consultants", "s", names=idx)
+    assert m.text == "profit of [COMPANY_1]"
+    assert await engine.redisplay(m.text, "s", may_unmask=False) == "profit of the company"
+
+
+async def test_digit_only_narration_is_masked(engine):
+    [out] = await engine.mask_rows([{"narration": "9820011223", "amount": "9820011223.00"}], "s")
+    assert out["narration"].startswith("[PHONE_") and out["amount"] == "9820011223.00"

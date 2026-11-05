@@ -2,30 +2,54 @@
   "name": "Tally Agent - Telegram bot",
   "nodes": [
     {
-      "parameters": { "updates": ["message"], "additionalFields": {} },
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
       "id": "b1b2c3d4-0002-4000-8000-000000000001",
       "name": "Telegram Trigger",
       "type": "n8n-nodes-base.telegramTrigger",
       "typeVersion": 1.1,
-      "position": [0, 0],
-      "credentials": { "telegramApi": { "id": "REPLACE", "name": "Tally Agent bot" } }
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE",
+          "name": "Tally Agent bot"
+        }
+      }
     },
     {
       "parameters": {
         "conditions": {
-          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
           "conditions": [
             {
               "id": "d0000000-0000-4000-8000-000000000001",
               "leftValue": "={{ $json.message.chat.type }}",
               "rightValue": "private",
-              "operator": { "type": "string", "operation": "equals" }
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
             },
             {
               "id": "d0000000-0000-4000-8000-000000000002",
               "leftValue": "={{ $json.message.text }}",
               "rightValue": "",
-              "operator": { "type": "string", "operation": "notEmpty", "singleValue": true }
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
             }
           ],
           "combinator": "and"
@@ -36,7 +60,23 @@
       "name": "Private text message only",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [220, 0]
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// \"/c 2 receivables ageing\" or \"#2 receivables ageing\" picks company 2.\n// Without a prefix the agent uses the person's first company.\nconst m = $input.first().json.message;\nlet text = String(m.text || '').trim();\nlet companyId = null;\nconst pre = text.match(/^(?:\\/c(?:ompany)?\\s+|#)(\\d{1,6})\\s+([\\s\\S]+)$/i);\nif (pre) { companyId = Number(pre[1]); text = pre[2].trim(); }\nreturn [{ json: { fromId: String(m.from.id), question: text.slice(0, 1000), companyId } }];"
+      },
+      "id": "b1b2c3d4-0002-4000-8000-000000000006",
+      "name": "Parse message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        -80
+      ]
     },
     {
       "parameters": {
@@ -47,54 +87,137 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "X-Act-As", "value": "=tg:{{ $json.message.from.id }}" }
+            {
+              "name": "X-Act-As",
+              "value": "=tg:{{ $json.fromId }}"
+            }
           ]
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ question: $json.message.text.slice(0, 1000), company_id: 1 }) }}",
+        "jsonBody": "={{ JSON.stringify({ question: $json.question, company_id: $json.companyId }) }}",
         "options": {
           "timeout": 90000,
-          "response": { "response": { "neverError": true } }
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
         }
       },
       "id": "b1b2c3d4-0002-4000-8000-000000000003",
       "name": "Ask Tally Agent",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [440, -80],
-      "credentials": { "httpHeaderAuth": { "id": "REPLACE", "name": "Tally Agent bridge key (Authorization: Bearer tak_...)" } }
+      "position": [
+        660,
+        -80
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE",
+          "name": "Tally Agent bridge key (Authorization: Bearer tak_...)"
+        }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "jsCode": "// Plain text only: no parse_mode, so nothing in an answer can become markup.\nconst r = $input.first().json;\nconst chatId = $('Telegram Trigger').first().json.message.chat.id;\nlet text;\nif (r.answer) {\n  text = r.answer;\n  if (r.explanation) text += '\\n\\n' + r.explanation;\n  for (const w of (r.warnings || [])) text += '\\n! ' + w;\n  const asOf = r.data_as_of ? new Date(r.data_as_of).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'unknown';\n  text += '\\n\\nData as of ' + asOf + (r.live ? ' (live)' : '');\n} else if (r.detail && /api key|target user|delegate/i.test(String(r.detail))) {\n  text = 'You are not registered for this bot. Ask the office to add your Telegram ID.';\n} else if (r.detail) {\n  text = 'Sorry: ' + String(r.detail);\n} else {\n  text = 'Sorry, the Tally Agent did not respond. Please try again shortly.';\n}\nreturn [{ json: { chatId, text: text.slice(0, 3900) } }];"
+        "jsCode": "// Plain text only: no parse_mode, so nothing in an answer can become markup.\nconst r = $input.first().json;\nconst chatId = $('Telegram Trigger').first().json.message.chat.id;\nfunction detailText(d) {\n  if (Array.isArray(d)) return d.map(e => (e && e.msg) || 'invalid value').join('; ');\n  return String(d || '');\n}\nlet text;\nif (r.answer) {\n  text = r.answer;\n  if (r.explanation) text += '\\n\\n' + r.explanation;\n  for (const w of (r.warnings || [])) text += '\\n! ' + w;\n  const asOf = r.data_as_of ? new Date(r.data_as_of).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }) : 'unknown';\n  text += '\\n\\nData as of ' + asOf + (r.live ? ' (live)' : '');\n} else if (r.detail && /api key|target user|delegate|act as/i.test(detailText(r.detail))) {\n  text = 'You are not registered for this bot. Ask the office to add your Telegram ID.';\n} else if (r.detail) {\n  text = 'Sorry: ' + detailText(r.detail);\n} else {\n  text = 'Sorry, the Tally Agent did not respond. Please try again shortly.';\n}\nreturn [{ json: { chatId, text: text.slice(0, 3900) } }];"
       },
       "id": "b1b2c3d4-0002-4000-8000-000000000004",
       "name": "Format reply",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [660, -80]
+      "position": [
+        880,
+        -80
+      ]
     },
     {
       "parameters": {
         "chatId": "={{ $json.chatId }}",
         "text": "={{ $json.text }}",
-        "additionalFields": { "appendAttribution": false }
+        "additionalFields": {
+          "appendAttribution": false
+        }
       },
       "id": "b1b2c3d4-0002-4000-8000-000000000005",
       "name": "Reply",
       "type": "n8n-nodes-base.telegram",
       "typeVersion": 1.2,
-      "position": [880, -80],
-      "credentials": { "telegramApi": { "id": "REPLACE", "name": "Tally Agent bot" } }
+      "position": [
+        1100,
+        -80
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE",
+          "name": "Tally Agent bot"
+        }
+      }
     }
   ],
   "connections": {
-    "Telegram Trigger": { "main": [ [ { "node": "Private text message only", "type": "main", "index": 0 } ] ] },
-    "Private text message only": { "main": [ [ { "node": "Ask Tally Agent", "type": "main", "index": 0 } ], [] ] },
-    "Ask Tally Agent": { "main": [ [ { "node": "Format reply", "type": "main", "index": 0 } ] ] },
-    "Format reply": { "main": [ [ { "node": "Reply", "type": "main", "index": 0 } ] ] }
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Private text message only",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Private text message only": {
+      "main": [
+        [
+          {
+            "node": "Parse message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Parse message": {
+      "main": [
+        [
+          {
+            "node": "Ask Tally Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask Tally Agent": {
+      "main": [
+        [
+          {
+            "node": "Format reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format reply": {
+      "main": [
+        [
+          {
+            "node": "Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
   },
-  "settings": { "executionOrder": "v1" },
+  "settings": {
+    "executionOrder": "v1"
+  },
   "pinData": {}
 }

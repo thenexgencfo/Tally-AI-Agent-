@@ -176,3 +176,30 @@ CREATE TABLE IF NOT EXISTS trn_inventory (
     godown      varchar(1024) DEFAULT '',
     PRIMARY KEY (company_id, guid, line_no)
 );
+
+-- Opening bill-wise dues at the start of the books (loader: mst_opening_bill_allocation).
+-- Without these, receipts against pre-books invoices look like advances and
+-- opening dues never appear in ageing.
+CREATE TABLE IF NOT EXISTS mst_opening_bill (
+    company_id  integer NOT NULL REFERENCES mst_company(company_id) ON DELETE CASCADE,
+    line_no     integer NOT NULL,
+    ledger      varchar(1024) NOT NULL,
+    name        varchar(1024) NOT NULL,
+    bill_date   date,
+    amount      numeric(17,2) NOT NULL,       -- same sign convention (debit negative)
+    is_advance  smallint DEFAULT 0,
+    PRIMARY KEY (company_id, line_no)
+);
+CREATE INDEX IF NOT EXISTS ix_opening_bill_ledger ON mst_opening_bill(company_id, ledger);
+
+-- Closing stock values entered against Stock-in-Hand ledgers, by date
+-- (loader: trn_closingstock_ledger). Used for P&L and balance sheet.
+CREATE TABLE IF NOT EXISTS trn_closingstock (
+    company_id  integer NOT NULL REFERENCES mst_company(company_id) ON DELETE CASCADE,
+    line_no     integer NOT NULL,
+    ledger      varchar(1024) NOT NULL,
+    stock_date  date NOT NULL,
+    stock_value numeric(17,2) NOT NULL,
+    PRIMARY KEY (company_id, line_no)
+);
+CREATE INDEX IF NOT EXISTS ix_closingstock ON trn_closingstock(company_id, ledger, stock_date);
