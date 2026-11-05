@@ -73,7 +73,7 @@ every request written to an append-only audit log first; if that fails, nothing 
 
 | Path | What it is |
 |---|---|
-| `sql/01–06` | Mirror schema, sync metadata, the 14 report functions, row-level security, append-only audit log, and the loader → mirror ingest bridge |
+| `sql/01–06` | Mirror schema, sync metadata, the 15 report functions, row-level security, append-only audit log, and the loader → mirror ingest bridge |
 | `sql/admin/add_loader_company.sql` | Gives one Tally company its own loader login and schema |
 | `app/masking/` | Identifier recognizers (with a Verhoeff checksum for Aadhaar), the party-name index, and the Redis placeholder vault |
 | `app/reports/registry.py` | The 15 reports, their typed parameters and the minimum role for each. This is the security boundary |

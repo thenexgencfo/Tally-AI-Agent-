@@ -52,7 +52,7 @@ Then follow the [setup guide](tally-agent/SETUP-WINDOWS.md) from Part B.
 | Path | What it is |
 |---|---|
 | `tally-agent/app/` | The agent: masking, AI planner, reports, audit, web page (Python, FastAPI) |
-| `tally-agent/sql/` | Database schema, the 14 report functions, row-level security, audit log, import step |
+| `tally-agent/sql/` | Database schema, the 15 report functions, row-level security, audit log, import step |
 | `tally-agent/deploy/` | Docker Compose, Caddy and environment template |
 | `tally-agent/sync/`, `tally-agent/scripts/` | Windows sync runner, company setup, API keys, encrypted backup and restore |
 | `tally-agent/n8n/` | Telegram bot and health-alert workflows |
