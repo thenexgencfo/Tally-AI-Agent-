@@ -8,7 +8,7 @@ Everything runs on the firm's own machine with a local model. No client data goe
 
 ## Diagrams
 
-Step-by-step diagrams are in [`docs/diagrams/`](docs/diagrams/):
+Step-by-step diagrams are in [`docs/diagrams/`](docs/diagrams/). Open `docs/diagrams/blueprint.html` in a browser for all of them on one page, in light or dark mode:
 
 1. **System architecture:** where each piece runs.
 2. **Sync pipeline:** how the copy of Tally is refreshed.
