@@ -1,12 +1,12 @@
 # Setting up Tally Agent on the Windows PC, step by step
 
-This guide sets everything up on the PC that runs Tally, the one with the RTX 5060 Ti. It takes about 2–3 hours the first time, most of it downloads.
+This guide sets everything up on the PC that runs Tally, the one with the RTX 5060 Ti. The project folder is `C:\TallyAI\tally-agent`. It takes about 2–3 hours the first time, most of it downloads.
 
 Run every command in **PowerShell**. Where a step says *(as Administrator)*, right-click PowerShell and choose **Run as administrator**.
 
 | Part | What you do | Time |
 |---|---|---|
-| A | Put the code on GitHub | 10 min |
+| A | Get the code onto the PC | 5 min |
 | B | Install the prerequisites | 45 min |
 | C | Configure secrets and users | 15 min |
 | D | Start it and try it with demo data | 30 min, mostly downloading the model |
@@ -17,32 +17,32 @@ Run every command in **PowerShell**. Where a step says *(as Administrator)*, rig
 
 ---
 
-## Part A: Put the code on GitHub
+## Part A: Get the code onto the PC
 
-Claude couldn't push because GitHub refused it access. You can push it yourself from your PC instead.
+The code is on GitHub at **https://github.com/thenexgencfo/Tally-AI-Agent-**.
 
 1. Install Git, *(as Administrator)*:
    ```powershell
    winget install --id Git.Git -e
    ```
    Close and reopen PowerShell afterwards.
-2. On github.com, create a **new private repository** named `tally-agent` under `thenexgencfo`. Leave it empty: no README and no .gitignore.
-3. Extract `tally-agent.zip` to `C:\`, so you end up with `C:\tally-agent\README.md`.
-4. Push it:
+2. Download the code into `C:\TallyAI`:
    ```powershell
-   cd C:\tally-agent
-   git init
-   git add .
-   git commit -m "Initial import of Tally Agent"
-   git branch -M main
-   git remote add origin https://github.com/thenexgencfo/tally-agent.git
-   git push -u origin main
+   cd C:\
+   git clone https://github.com/thenexgencfo/Tally-AI-Agent-.git TallyAI
    ```
-   A browser window opens the first time so you can sign in to GitHub.
+   If the repository is private, a browser window opens the first time so you can sign in to GitHub.
+3. The project is now in **`C:\TallyAI\tally-agent`**. Every command in this guide uses that folder.
 
-> To let Claude push in future sessions, connect GitHub at https://claude.ai/connect-github and install the Claude GitHub App on the repository.
+**To update later**, get the latest code and restart:
+```powershell
+cd C:\TallyAI
+git pull
+cd tally-agent\deploy
+docker compose --env-file .env up -d --build
+```
 
-Files that hold secrets (`deploy\.env`, `config\users.json`, `backups\`) are listed in `.gitignore`, so they are never pushed.
+Your own settings and data are never uploaded to GitHub, and `git pull` doesn't touch them: `deploy\.env`, `config\users.json`, `sync\companies.json`, the `loader\` folders, `sync\logs\` and `backups\` are all excluded in `.gitignore`.
 
 ---
 
@@ -108,7 +108,7 @@ age --version
 ### B6. Let the project's scripts run
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
-Get-ChildItem C:\tally-agent -Recurse | Unblock-File
+Get-ChildItem C:\TallyAI\tally-agent -Recurse | Unblock-File
 ```
 
 ### B7. Encrypt the disk (BitLocker)
@@ -127,7 +127,7 @@ The PC must stay on and signed in, because Tally and Docker Desktop run in your 
 
 ### C1. Create `deploy\.env`
 ```powershell
-cd C:\tally-agent\deploy
+cd C:\TallyAI\tally-agent\deploy
 Copy-Item .env.example .env
 notepad .env
 ```
@@ -156,7 +156,7 @@ This loads a fake demo company so you can try the system before connecting Tally
 
 ### C2. Create the users file
 ```powershell
-cd C:\tally-agent
+cd C:\TallyAI\tally-agent
 Copy-Item config\users.example.json config\users.json
 .\scripts\new-api-key.ps1
 ```
@@ -183,7 +183,7 @@ Changes to this file take effect immediately, with no restart. To remove someone
 ### D1. Download the AI model
 This is about 9 GB and the only step that needs the internet. When running, the model has no internet access at all.
 ```powershell
-cd C:\tally-agent\deploy
+cd C:\TallyAI\tally-agent\deploy
 docker compose --env-file .env --profile setup run --rm ollama-pull
 ```
 
@@ -228,7 +228,7 @@ The first AI question can take 20–40 seconds while the model loads onto the GP
 ### D5. Remove the certificate warning on staff devices
 Export Caddy's certificate:
 ```powershell
-cd C:\tally-agent\deploy
+cd C:\TallyAI\tally-agent\deploy
 docker compose --env-file .env cp caddy:/data/caddy/pki/authorities/local/root.crt ..\caddy-root.crt
 ```
 Then on each staff device that will use the system:
@@ -246,7 +246,7 @@ REFERENCE_DATE=
 ```
 Then wipe only the database (the 9 GB model stays):
 ```powershell
-cd C:\tally-agent\deploy
+cd C:\TallyAI\tally-agent\deploy
 docker compose --env-file .env down
 docker volume rm tally-agent_pgdata
 docker compose --env-file .env up -d
@@ -258,18 +258,18 @@ docker compose --env-file .env up -d
 
 ### E1. Create a login for the company's sync
 ```powershell
-cd C:\tally-agent
+cd C:\TallyAI\tally-agent
 .\scripts\add-company.ps1 -CompanyId 1
 ```
 Copy the **password** it prints.
 
 ### E2. Install the Tally loader
 1. Download the latest release of **tally-database-loader** from <https://github.com/dhananjay1405/tally-database-loader/releases>.
-2. Extract it to `C:\tally-agent\loader\c1\`, so that `run.bat` ends up in that folder.
+2. Extract it to `C:\TallyAI\tally-agent\loader\c1\`, so that `run.bat` ends up in that folder.
 3. Copy the example config into it:
    ```powershell
-   Copy-Item C:\tally-agent\sync\loader-config.example.json C:\tally-agent\loader\c1\config.json
-   notepad C:\tally-agent\loader\c1\config.json
+   Copy-Item C:\TallyAI\tally-agent\sync\loader-config.example.json C:\TallyAI\tally-agent\loader\c1\config.json
+   notepad C:\TallyAI\tally-agent\loader\c1\config.json
    ```
 4. In `config.json`, set:
    - `"password"`: the password from E1.
@@ -279,14 +279,14 @@ Copy the **password** it prints.
 ### E3. Run the loader once by hand
 Keep Tally open with the company loaded, then:
 ```powershell
-cd C:\tally-agent\loader\c1
+cd C:\TallyAI\tally-agent\loader\c1
 .\run.bat
 ```
 When it finishes, read `import-log.txt`. If `error-log.txt` has anything in it, fix that first. The loader's own README explains its error messages.
 
 ### E4. Copy the data into the agent
 ```powershell
-cd C:\tally-agent
+cd C:\TallyAI\tally-agent
 Copy-Item sync\companies.example.json sync\companies.json
 notepad sync\companies.json
 ```
@@ -303,7 +303,7 @@ Then ask a few questions you already know the answers to: a party balance, the a
 
 ### E6. Keep syncing automatically
 ```powershell
-$a = New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\tally-agent\sync\run-sync.ps1"'
+$a = New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\TallyAI\tally-agent\sync\run-sync.ps1"'
 $t = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 # No time limit (the default kills it after 3 days), restart if it ever stops, ignore battery.
 $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 `
@@ -311,7 +311,7 @@ $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -Restar
 Register-ScheduledTask -TaskName "Tally Agent Sync" -Action $a -Trigger $t -Settings $s
 Start-ScheduledTask -TaskName "Tally Agent Sync"
 ```
-The agent now syncs about once a minute. The badge in the web UI shows how fresh the data is, and logs are in `C:\tally-agent\sync\logs\`.
+The agent now syncs about once a minute. The badge in the web UI shows how fresh the data is, and logs are in `C:\TallyAI\tally-agent\sync\logs\`.
 
 **More companies:** repeat E1–E4 with `-CompanyId 2`, folder `loader\c2`, and a second entry in `companies.json`. Then add `2` to the `companies` list of each user who may see it.
 
@@ -347,15 +347,15 @@ The Tally copy inside the agent can always be rebuilt from Tally. The **audit lo
 
 1. Create a backup key:
    ```powershell
-   age-keygen -o C:\tally-agent-backup-key.txt
+   age-keygen -o C:\TallyAI\tally-agent-backup-key.txt
    ```
    It prints a **public key** starting with `age1...`. Copy it.
-2. **Move `C:\tally-agent-backup-key.txt` off this PC:** to a USB drive kept in the office safe, or print it. Without it, backups can't be restored. If it stays on this PC, a thief gets the backups and the key together.
+2. **Move `C:\TallyAI\tally-agent-backup-key.txt` off this PC:** to a USB drive kept in the office safe, or print it. Without it, backups can't be restored. If it stays on this PC, a thief gets the backups and the key together.
 3. Save the public key and schedule nightly backups:
    ```powershell
    [Environment]::SetEnvironmentVariable("TALLY_BACKUP_AGE_RECIPIENT", "age1PASTE_YOURS", "User")
 
-   $a = New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\tally-agent\scripts\backup.ps1" -OutDir "D:\TallyAgentBackups"'
+   $a = New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\TallyAI\tally-agent\scripts\backup.ps1" -OutDir "D:\TallyAgentBackups"'
    $t = New-ScheduledTaskTrigger -Daily -At 2am
    Register-ScheduledTask -TaskName "Tally Agent Backup" -Action $a -Trigger $t
    ```
@@ -397,8 +397,8 @@ The bot answers only in private chats, never in groups. It uses the person's fir
 | Remove a person | Delete their entry in `config\users.json`. Immediate |
 | Check health | `https://TS_IP/healthz` |
 | See who asked what | `docker exec tally-agent-postgres-1 psql -U postgres -d tally -c "SELECT ts, user_id, report_id, outcome FROM audit.query_log ORDER BY ts DESC LIMIT 20"` |
-| Restart everything | `cd C:\tally-agent\deploy; docker compose --env-file .env restart` |
-| Update the code | `cd C:\tally-agent; git pull; cd deploy; docker compose --env-file .env up -d --build` |
+| Restart everything | `cd C:\TallyAI\tally-agent\deploy; docker compose --env-file .env restart` |
+| Update the code | `cd C:\TallyAI\tally-agent; git pull; cd deploy; docker compose --env-file .env up -d --build` |
 
 ## Troubleshooting
 
