@@ -6,6 +6,20 @@ Staff at a CA firm ask questions in plain English and get answers from Tally in 
 
 Everything runs on the firm's own machine with a local model. No client data goes to any cloud AI.
 
+## Diagrams
+
+Step-by-step diagrams are in [`docs/diagrams/`](docs/diagrams/):
+
+1. **System architecture:** where each piece runs.
+2. **Sync pipeline:** how the copy of Tally is refreshed.
+3. **One question, step by step:** what reaches the AI, Redis and PostgreSQL.
+4. **Masking:** what the AI never sees.
+5. **Database permissions:** which login can touch what.
+6. **Failure handling:** what staff see when something breaks.
+7. **Store audit forms:** how the forms reach n8n.
+
+![One question, step by step](docs/diagrams/3-question-step-by-step.png)
+
 ## The three rules the design rests on
 
 1. **The model never sees a client identifier.** PANs, GSTINs, Aadhaar, bank details, phone numbers, emails and party names are replaced with placeholders such as `[PARTY_1]` before the model gets any text.
