@@ -158,6 +158,83 @@ async function selectFirst(page, id) { const v = await page.$eval('#' + id, s =>
     check('F2 no page errors', errs.length === 0, errs.join(' | '));
     await ctx.close();
   }
+
+  // ───────────────────────── FORM 1: field conditions ─────────────────────────
+  {
+    const ctx = await browser.newContext({ viewport: { width: 360, height: 740 } });
+    const page = await ctx.newPage(); const errs = []; page.on('pageerror', e => errs.push(e.message));
+    let offline = true, submitDelay = 0;
+    const log = { uploads: 0, submits: 0 };
+    await page.route('https://n8n.tail61f871.ts.net/**', async (route) => {
+      const req = route.request();
+      const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' };
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+      if (req.url().endsWith('photo-upload')) {
+        if (offline) return route.abort('internetdisconnected');
+        log.uploads++;
+        return route.fulfill({ status: 200, headers: { ...cors, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ link: 'https://drive.example/' + log.uploads, fileId: 'x' }) });
+      }
+      log.submits++;
+      if (submitDelay) await new Promise(r => setTimeout(r, submitDelay));
+      return route.fulfill({ status: 200, headers: cors, body: '{}' });
+    });
+    await page.goto(BASE + 'form1_on_reaching_store.html'); await enterPin(page);
+    await page.selectOption('#tl-name', 'teamA'); await page.fill('#tl-phone', '9876543210'); await page.fill('#store-code', 'MUM-042');
+    await page.setInputFiles('#team-photo', [file('a.jpg')]);
+    await page.waitForTimeout(6000);
+    check('F1 offline upload -> Failed + Retry (no hang)',
+      /Failed/.test(await page.textContent('#team-photo-status')) && (await page.$$('#team-photo-status .retry-btn')).length === 1);
+    offline = false; await page.click('#team-photo-status .retry-btn'); await page.waitForTimeout(800);
+    check('F1 back online -> Retry saves', /Saved/.test(await page.textContent('#team-photo-status')));
+    const ten = Array.from({ length: 10 }, (_, i) => file('IMG_' + i + '.HEIC', 'image/heic'));
+    await page.setInputFiles('#backroom-photo', ten); await page.waitForTimeout(2500);
+    const saved = (await page.textContent('#backroom-photo-status')).match(/Saved/g) || [];
+    check('F1 ten HEIC photos all saved', saved.length === 10, saved.length + '/10');
+    const names = await page.$$eval('#backroom-photo-status .uname', els => els.map(e => e.textContent));
+    check('F1 HEIC keeps .heic extension and numbering',
+      names[0].endsWith('Photo_of_Backroom.heic') && names[9].endsWith('_10.heic'), names[9]);
+    for (const id of ['store-brand', 'mall-status', 'store-category', 'audit-type']) await selectFirst(page, id);
+    await page.fill('#city', 'Pune'); await page.fill('#reach-time', '09:15'); await page.fill('#store-mgr', 'Asha');
+    await page.fill('#store-contact', '02012345678'); await page.fill('#store-email', 's@b.com');
+    await page.fill('#arm-email', 'a@b.com'); await page.fill('#rm-email', 'r@b.com'); await page.dispatchEvent('#rm-email', 'input');
+    submitDelay = 1500;
+    await page.click('#copy-btn');
+    await page.click('#copy-btn', { force: true, timeout: 2000 }).catch(() => {});
+    await page.click('#copy-btn', { force: true, timeout: 2000 }).catch(() => {});
+    await page.waitForSelector('#thank-you-screen', { state: 'visible', timeout: 15000 }).catch(() => {});
+    check('F1 triple-tap submit sends exactly one report', log.submits === 1, 'submits=' + log.submits);
+    check('F1 field-conditions: no page errors', errs.length === 0, errs.join(' | '));
+    await ctx.close();
+  }
+  // ───────────────────────── FORM 1: server never answers submit ─────────────────────────
+  {
+    const ctx = await browser.newContext(); const page = await ctx.newPage();
+    await page.route('https://n8n.tail61f871.ts.net/**', async (route) => {
+      const req = route.request();
+      const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' };
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
+      if (req.url().endsWith('photo-upload')) {
+        return route.fulfill({ status: 200, headers: { ...cors, 'Content-Type': 'application/json' },
+          body: '{"link":"https://d.example/1","fileId":"1"}' });
+      }
+      // submit: never answered -- the form's own 30 s timeout x 3 attempts must end it
+    });
+    await page.clock.install();
+    await page.goto(BASE + 'form1_on_reaching_store.html'); await enterPin(page);
+    await page.selectOption('#tl-name', 'teamA'); await page.fill('#tl-phone', '9876543210'); await page.fill('#store-code', 'MUM-042');
+    for (const id of ['store-brand', 'mall-status', 'store-category', 'audit-type']) await selectFirst(page, id);
+    await page.fill('#city', 'Pune'); await page.fill('#reach-time', '09:15'); await page.fill('#store-mgr', 'Asha');
+    await page.fill('#store-contact', '02012345678'); await page.fill('#store-email', 's@b.com');
+    await page.fill('#arm-email', 'a@b.com'); await page.fill('#rm-email', 'r@b.com');
+    await page.setInputFiles('#team-photo', [file('a.jpg')]); await page.setInputFiles('#backroom-photo', [file('b.jpg')]);
+    await page.clock.runFor(2000);
+    await page.click('#copy-btn');
+    for (let i = 0; i < 12; i++) { await page.clock.runFor(10000); }
+    check('F1 silent server: gives up with error + Retry, never "Submitted"',
+      await page.isVisible('#submit-error') && !(await page.isVisible('#thank-you-screen')));
+    await ctx.close();
+  }
   await browser.close();
   console.log(`\n${ok} passed, ${bad} failed`);
 })();

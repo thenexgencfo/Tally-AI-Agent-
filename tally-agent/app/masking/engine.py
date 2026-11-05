@@ -16,12 +16,33 @@ from __future__ import annotations
 
 import enum
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from .recognizers import Match, find_all
 from .vault import TokenVault
 
 TOKEN_RE = re.compile(r"\[([A-Z]+)_(\d+)\]")
+
+# Phones and word processors turn ' into ’ and - into –. Tally stores the plain
+# characters, so a name typed on an iPhone ("D’Souza") would not match the
+# books and would slip past masking. Normalise before matching.
+_LOOKALIKES = str.maketrans({
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u02bc": "'", "\u2032": "'",
+    "`": "'", "\u00b4": "'",
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u2033": '"',
+    "\u00a0": " ", "\u2007": " ", "\u202f": " ", "\u3000": " ",
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2212": "-",
+})
+# Control characters (incl. NUL, which PostgreSQL text cannot store), zero-width
+# and bidirectional-override characters: never meaningful in a question.
+_INVISIBLE = re.compile(
+    "[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u200b-\u200f\u202a-\u202e"
+    "\u2060-\u2064\u2066-\u2069\ufeff]")
+
+
+def normalize_text(text: str) -> str:
+    return _INVISIBLE.sub("", unicodedata.normalize("NFC", text).translate(_LOOKALIKES))
 
 # Database columns whose value is sensitive in full, whatever it looks like.
 SENSITIVE_COLUMNS: dict[str, str] = {
@@ -101,20 +122,25 @@ class NameIndex:
     _canon: dict[str, tuple[str, str]]
 
     def canonical(self, matched: str) -> str:
-        return self._canon.get(matched.lower(), (matched, "PARTY"))[0]
+        return self._canon.get(normalize_text(matched).lower(), (matched, "PARTY"))[0]
 
     def entity(self, matched: str) -> str:
-        return self._canon.get(matched.lower(), (matched, "PARTY"))[1]
+        return self._canon.get(normalize_text(matched).lower(), (matched, "PARTY"))[1]
 
     @classmethod
     def build(cls, party_names: list[str], other_ledgers: list[str],
               company: str | None = None) -> "NameIndex | None":
         canon: dict[str, tuple[str, str]] = {}
-        parties = sorted({n.strip() for n in party_names if n and len(n.strip()) >= 3})
+        # Keys are normalised (quotes, spaces, case); values keep the exact
+        # ledger name, which is what the database is queried with.
+        parties = sorted({n for n in party_names if n and len(n.strip()) >= 3})
+        # Stored trimmed: the match covers only the visible name, so surrounding
+        # spaces in the ledger name stay where they were when unmasked. SQL
+        # lookups ignore surrounding spaces (btrim) so the trimmed name finds it.
         for name in parties:
-            canon[name.lower()] = (name, "PARTY")
+            canon[normalize_text(name).strip().lower()] = (name.strip(), "PARTY")
         if company and len(company.strip()) >= 3:
-            canon[company.strip().lower()] = (company.strip(), "COMPANY")
+            canon[normalize_text(company).strip().lower()] = (company.strip(), "COMPANY")
 
         other_full = {o.strip().lower() for o in other_ledgers}
         other_words = {
@@ -125,7 +151,7 @@ class NameIndex:
         # and not the name of some non-party ledger.
         owners: dict[str, set[tuple[str, str]]] = {}
         for full, (name, ent) in list(canon.items()):
-            for v in _variants(name):
+            for v in _variants(normalize_text(name)):
                 if len(v) >= 5 and v.lower() not in other_full:
                     owners.setdefault(v.lower(), set()).add((name, ent))
         for v, who in owners.items():
@@ -137,7 +163,8 @@ class NameIndex:
         # non-party ledger name -- so "Design" never masks "Design Fees".
         first_words: dict[str, set[tuple[str, str]]] = {}
         for name, ent in set(canon.values()):
-            core = (_variants(name) or [name])[-1]
+            norm = normalize_text(name).strip()
+            core = (_variants(norm) or [norm])[-1]
             words = core.split()
             if len(words) < 2:
                 continue
@@ -222,6 +249,7 @@ class MaskingEngine:
     ) -> MaskResult:
         if not text:
             return MaskResult(text or "", [])
+        text = normalize_text(text)
 
         matches: list[Match] = list(
             find_all(text, include_column_only=include_column_only)

@@ -174,3 +174,22 @@ def test_non_finite_numbers_never_crash(client):
         r = client.post("/v1/report", content=body,
                         headers={**auth("partner"), "Content-Type": "application/json"})
         assert r.status_code in (200, 400), r.text      # dropped or rejected -- never a 500
+
+
+def test_redis_outage_gives_clear_503(client, monkeypatch):
+    import redis.asyncio as aioredis
+    dead = aioredis.from_url("redis://127.0.0.1:6390/0", socket_connect_timeout=0.5)
+    monkeypatch.setattr(app.state.limiter, "_r", dead)
+    r = client.post("/v1/ask", headers=auth("partner"), json={"question": "trial balance", "company_id": 1})
+    assert r.status_code == 503 and "temporarily unavailable" in r.json()["detail"]
+
+
+def test_database_outage_gives_clear_503(client, monkeypatch):
+    from app import db as dbmod
+
+    async def down(*a, **k):
+        raise ConnectionRefusedError("db down")
+    monkeypatch.setattr(dbmod, "get_pool", down)
+    r = client.post("/v1/ask", headers=auth("partner"), json={"question": "trial balance", "company_id": 1})
+    assert r.status_code == 503 and "temporarily unavailable" in r.json()["detail"]
+    assert client.get("/healthz").status_code == 503

@@ -62,9 +62,16 @@ def summarize(spec: ReportSpec, rows: list[dict], params: dict) -> str:
 
     if rid == "trial_balance":
         dr, cr = _sum(rows, "debit"), _sum(rows, "credit")
-        status = "balanced" if dr == cr else f"OUT OF BALANCE by {format_inr(dr - cr)}"
-        return (f"Trial balance as on {params.get('as_of')}: {n} ledgers, total debit "
+        status = "balanced" if dr == cr else f"OUT OF BALANCE by {format_inr(abs(dr - cr))}"
+        text = (f"Trial balance as on {params.get('as_of')}: {n} ledgers, total debit "
                 f"{format_inr(dr)}, total credit {format_inr(cr)} ({status}).")
+        orphans = [r for r in rows if r.get("group_name") == "(not in ledger masters)"]
+        if orphans:
+            text += (f" {len(orphans)} ledger(s) used in vouchers are missing from the ledger list "
+                     "(deleted or renamed in Tally); they are listed as '(not in ledger masters)'.")
+        if dr != cr:
+            text += " Books exported from Tally always balance, so check Tally for an unbalanced or damaged voucher."
+        return text
     if rid == "ledger_balance":
         r = rows[0]
         return (f"{r['ledger']} ({r['group_name']}) closing balance as on "

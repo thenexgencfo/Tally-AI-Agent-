@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any, Protocol
 
 import httpx
@@ -26,11 +27,26 @@ class LLM(Protocol):
 
 
 class OllamaLLM:
+    # Circuit breaker: after a failure (refused, timeout, error), skip the model
+    # for this long and let the keyword router answer. A hung GPU then costs one
+    # slow question, not a timeout on every question.
+    COOLDOWN_SECONDS = 60
+
     def __init__(self, base_url: str, model: str, timeout: float = 45) -> None:
         self.model = model
         self._client = httpx.AsyncClient(base_url=base_url, timeout=timeout)
+        self._down_until = 0.0
 
     async def _chat(self, messages: list[dict], **extra: Any) -> str:
+        if time.monotonic() < self._down_until:
+            raise LLMUnavailable("model recently failed; using keyword routing for a minute")
+        try:
+            return await self._chat_once(messages, **extra)
+        except LLMUnavailable:
+            self._down_until = time.monotonic() + self.COOLDOWN_SECONDS
+            raise
+
+    async def _chat_once(self, messages: list[dict], **extra: Any) -> str:
         payload = {
             "model": self.model,
             "messages": messages,

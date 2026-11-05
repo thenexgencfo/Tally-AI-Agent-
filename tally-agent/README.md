@@ -70,7 +70,7 @@ every request written to an append-only audit log first; if that fails, nothing 
 | `sync/` | Windows sync runner and example loader and company configs |
 | `scripts/` | DB setup, API keys, company provisioning, encrypted backup and restore, test runner |
 | `n8n/` | Health/sync alert workflow and the Telegram bot workflow |
-| `tests/` | 140+ tests, covering the security claims end to end. See `SECURITY.md` |
+| `tests/` | 157 tests, including production-condition robustness (`test_robustness.py`), covering the security claims end to end. See `SECURITY.md` |
 
 ## Reports available
 

@@ -1,6 +1,7 @@
 """HTTP API and staff web UI."""
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import os
@@ -9,7 +10,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import asyncpg
 import redis.asyncio as aioredis
+import redis.exceptions as redis_exc
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -63,6 +66,23 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Tally Agent", lifespan=lifespan,
               docs_url=None, redoc_url=None, openapi_url=None)
+
+# A database or Redis outage must produce a clear, retryable 503 -- not a bare
+# "Internal Server Error" that the web page and the Telegram bot cannot explain.
+_UNAVAILABLE = (redis_exc.ConnectionError, redis_exc.TimeoutError, asyncpg.PostgresConnectionError,
+                asyncpg.CannotConnectNowError, asyncpg.InterfaceError, asyncpg.ConnectionDoesNotExistError,
+                ConnectionError, asyncio.TimeoutError, TimeoutError, OSError)
+UNAVAILABLE_MSG = "The database or cache is temporarily unavailable. Please try again in a minute."
+
+
+@app.exception_handler(Exception)
+async def _unhandled(request: Request, exc: Exception):
+    if isinstance(exc, _UNAVAILABLE):
+        log.error("dependency unavailable: %s", type(exc).__name__)
+        return JSONResponse({"detail": UNAVAILABLE_MSG}, status_code=503)
+    ref = uuid.uuid4().hex[:12]
+    log.error("unhandled error ref=%s type=%s", ref, type(exc).__name__)
+    return JSONResponse({"detail": f"internal error (ref {ref})"}, status_code=500)
 
 
 @app.middleware("http")
@@ -121,6 +141,8 @@ async def current_user(request: Request) -> User:
     except UsersFileError as exc:
         raise HTTPException(status_code=503, detail="access list is being updated or is "
                             "invalid; ask the administrator") from exc
+    except _UNAVAILABLE as exc:
+        raise HTTPException(status_code=503, detail=UNAVAILABLE_MSG) from exc
     except AuthError as exc:
         status = 429 if "rate limit" in str(exc) else 401
         raise HTTPException(status_code=status, detail=str(exc)) from exc
@@ -160,6 +182,9 @@ def _guard(exc: Exception) -> HTTPException:
         return HTTPException(400, str(exc))
     if isinstance(exc, AuditFailure):
         return HTTPException(503, str(exc))
+    if isinstance(exc, _UNAVAILABLE):
+        log.error("dependency unavailable: %s", type(exc).__name__)
+        return HTTPException(503, UNAVAILABLE_MSG)
     ref = uuid.uuid4().hex[:12]
     # Log the type and reference only: messages may contain client data.
     log.error("unhandled error ref=%s type=%s", ref, type(exc).__name__)

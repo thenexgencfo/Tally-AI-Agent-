@@ -50,6 +50,34 @@ Three reviewers examined the code adversarially after the first version. Every f
 11. **The restore drill would have wiped recent audit rows.** It now runs in a throwaway container.
 12. **Other issues:** the Windows sync script's exit-code bug, its argument injection, the 3-day task timeout and CRLF line endings; denials not audited; non-finite numbers causing 500s; stale UI results; n8n silent on outage. All fixed.
 
+## Production-condition testing
+
+`tests/test_robustness.py` and `tests/messy_data.py` build a deliberately messy company and ingest it through the real sync path:
+
+- **Names:** Hindi, apostrophes and quotes, regex characters, a 1,000-character name, short names inside longer ones, stray spaces.
+- **Structure:** nested and cyclic groups, NULLs, a leap day, four financial years, advances, opening bills, closing stock.
+- **Planted faults:** a voucher on a deleted ledger, an unbalanced voucher, a voucher with no date, hostile narrations.
+
+The test then checks:
+
+- every report, for speed;
+- that the books balance in every clean year, and that the planted faults are shown and explained;
+- no leaks to the model across awkward name spellings, including iPhone curly apostrophes;
+- hostile and odd input, such as null bytes, bidirectional tricks, emoji and 1,000-character questions;
+- 40 simultaneous questions;
+- a hung and a garbage-producing model;
+- Redis and database outages, at the HTTP level.
+
+Problems this found, all fixed and kept as tests:
+
+1. **Reports timed out after the first big sync.** Stale planner statistics caused 15 s timeouts on the trial balance and ledger balance. Ingest now runs ANALYZE.
+2. **Curly apostrophes leaked names.** "D’Souza" typed on a phone reached the model unmasked. Text is now normalised: quotes, dashes, invisible characters.
+3. **A null byte in a question** produced a misleading audit error.
+4. **Ledger names with surrounding spaces** could not be found.
+5. **A Redis or database outage returned a bare non-JSON 500.** It is now a clear 503 that recovers on its own.
+6. **A hung model delayed every question.** A circuit breaker now limits that to one slow question per minute.
+7. **Vouchers on deleted ledgers left the trial balance silently out.** Such ledgers are now listed, and the answer explains any difference.
+
 ## Where data lives
 
 | Place | Contents | Protection |

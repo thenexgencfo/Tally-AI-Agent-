@@ -154,6 +154,14 @@ LANGUAGE sql STABLE SECURITY INVOKER SET search_path = tally, pg_temp AS $$
         FROM lg
         LEFT JOIN allmv a ON a.ledger = lg.ledger
         LEFT JOIN fymv  f ON f.ledger = lg.ledger
+        UNION ALL
+        -- Ledgers used in vouchers but missing from the ledger list (deleted or
+        -- renamed in Tally after posting). Shown, not dropped, so the totals
+        -- still add up and the reason for any difference is visible.
+        SELECT a.ledger, '(not in ledger masters)'::varchar, '(unknown)'::varchar, 0::smallint,
+               a.movement
+        FROM allmv a
+        WHERE NOT EXISTS (SELECT 1 FROM lg WHERE lg.ledger = a.ledger)
     ),
     merged AS (
         SELECT b.ledger, b.group_name, b.primary_group, b.is_revenue,
@@ -193,7 +201,7 @@ LANGUAGE sql STABLE SECURITY INVOKER SET search_path = tally, pg_temp AS $$
     FROM v_ledger_group lg
     LEFT JOIN fn_movement(p_company, NULL, p_to) m ON m.ledger = lg.ledger
     WHERE lg.company_id = p_company
-      AND lower(lg.ledger) = lower(p_ledger)
+      AND lower(btrim(lg.ledger)) = lower(btrim(p_ledger))
     ORDER BY lg.ledger;
 $$;
 
@@ -214,7 +222,7 @@ LANGUAGE sql STABLE SECURITY INVOKER SET search_path = tally, pg_temp AS $$
                      AND v2.date < p_from AND v2.is_cancelled = 0 AND v2.is_optional = 0
                ), 0) AS bal
         FROM v_ledger_group lg
-        WHERE lg.company_id = p_company AND lower(lg.ledger) = lower(p_ledger)
+        WHERE lg.company_id = p_company AND lower(btrim(lg.ledger)) = lower(btrim(p_ledger))
     ), lines AS (
         SELECT v.date, v.voucher_type, v.voucher_number, v.narration, a.amount,
                (SELECT bal FROM opening)
@@ -222,7 +230,7 @@ LANGUAGE sql STABLE SECURITY INVOKER SET search_path = tally, pg_temp AS $$
                                        ROWS UNBOUNDED PRECEDING) AS bal
         FROM trn_accounting a
         JOIN trn_voucher v ON v.company_id = a.company_id AND v.guid = a.guid
-        WHERE a.company_id = p_company AND lower(a.ledger) = lower(p_ledger)
+        WHERE a.company_id = p_company AND lower(btrim(a.ledger)) = lower(btrim(p_ledger))
           AND v.date BETWEEN p_from AND p_to
           AND v.is_cancelled = 0 AND v.is_optional = 0
     )
@@ -447,10 +455,10 @@ LANGUAGE sql STABLE SECURITY INVOKER SET search_path = tally, pg_temp AS $$
       AND v.date BETWEEN p_from AND p_to
       AND v.is_cancelled = 0 AND v.is_optional = 0
       AND (p_party IS NULL OR p_party = ''
-           OR lower(v.party_name) = lower(p_party)
+           OR lower(btrim(v.party_name)) = lower(btrim(p_party))
            OR EXISTS (SELECT 1 FROM trn_accounting a
                       WHERE a.company_id = v.company_id AND a.guid = v.guid
-                        AND lower(a.ledger) = lower(p_party)))
+                        AND lower(btrim(a.ledger)) = lower(btrim(p_party))))
       AND (p_min_amount IS NULL OR t.amt >= p_min_amount)
     ORDER BY v.date DESC, v.voucher_number DESC
     LIMIT p_limit;
@@ -469,7 +477,7 @@ LANGUAGE sql STABLE SECURITY INVOKER SET search_path = tally, pg_temp AS $$
            l.credit_limit::numeric, l.credit_days::integer
     FROM mst_ledger l
     WHERE l.company_id = p_company
-      AND lower(l.name) = lower(p_party)
+      AND lower(btrim(l.name)) = lower(btrim(p_party))
     LIMIT 1;
 $$;
 

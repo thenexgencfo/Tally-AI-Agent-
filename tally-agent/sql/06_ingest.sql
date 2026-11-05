@@ -221,6 +221,14 @@ BEGIN
         GET DIAGNOSTICS c = ROW_COUNT; total := total + c;
     END IF;
 
+    -- Refresh planner statistics now. Without this, the first big sync after
+    -- install (or after a company grows) leaves Postgres believing the tables
+    -- are tiny; it then picks nested-loop plans and reports time out for
+    -- minutes until autovacuum catches up. Reproduced: 30k vouchers -> 15 s
+    -- timeouts on trial balance and ledger balance.
+    ANALYZE mst_group, mst_ledger, trn_voucher, trn_accounting, trn_bill,
+            mst_opening_bill, trn_closingstock;
+
     INSERT INTO sync_state (company_id, last_sync_at, last_status, last_error, rows_synced)
     VALUES (p_company, now(), 'ok', '', total)
     ON CONFLICT (company_id) DO UPDATE

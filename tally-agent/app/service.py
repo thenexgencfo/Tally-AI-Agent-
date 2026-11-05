@@ -34,7 +34,7 @@ from .agent.llm import LLM, LLMUnavailable
 from .agent.planner import Plan, PlanDenied, Planner
 from .agent.dates import resolve_period
 from .auth import User
-from .masking import MaskingEngine, NameIndex
+from .masking import MaskingEngine, NameIndex, normalize_text
 from .reports.registry import REPORTS, ReportError, ReportSpec, run_report
 
 _SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
@@ -107,7 +107,7 @@ class AgentService:
         llm: LLM | None,
         live: TallyLive | None,
         redis_client: aioredis.Redis | None,
-        max_rows: int = 500,
+        max_rows: int = 20_000,
         cache_ttl: int = 120,
         narrate: bool = True,
         audit_salt: str = "",
@@ -228,6 +228,7 @@ class AgentService:
     async def ask(self, user: User, question: str, company_id: int | None,
                   session_id: str | None = None, client_ip: str | None = None) -> AskResult:
         t0 = time.monotonic()
+        question = normalize_text(question).strip()
         if company_id is None:
             if not user.companies:
                 raise Denied("you do not have access to any company")
@@ -291,8 +292,10 @@ class AgentService:
         tokenised: dict[str, Any] = {}
         for p in spec.params:
             v = params.get(p.name)
-            if p.type == "ledger" and isinstance(v, str) and v.strip():
-                tokenised[p.name] = await self.engine.tokenize(sess, "PARTY", v.strip())
+            if isinstance(v, str):
+                v = normalize_text(v).strip()
+            if p.type == "ledger" and isinstance(v, str) and v:
+                tokenised[p.name] = await self.engine.tokenize(sess, "PARTY", v)
             elif v not in (None, ""):
                 tokenised[p.name] = v
         label = f"[direct] {spec.id} " + json.dumps(tokenised, default=str)
