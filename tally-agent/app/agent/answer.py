@@ -96,6 +96,14 @@ def summarize(spec: ReportSpec, rows: list[dict], params: dict) -> str:
             text += (f" Advances / on-account: {format_inr(-_sum(adv, 'outstanding'))} "
                      f"({len(adv)} entries). Net due: {format_inr(_sum(rows, 'outstanding'))}.")
         return text
+    if rid == "top_overdue_parties":
+        who = "Creditors (we owe)" if params.get("group") == "Sundry Creditors" else "Debtors (owe us)"
+        lines = "; ".join(
+            f"{i+1}. {r['party']} {format_inr(r['overdue_amount'])} "
+            f"({r['overdue_bills']} bill{'s' if r['overdue_bills'] != 1 else ''}, oldest {r['oldest_overdue_days']} days)"
+            for i, r in enumerate(rows))
+        return (f"{who} ranked by overdue amount as on {params.get('as_of')} (overdue = older than the "
+                f"party's credit days): {lines}. Total overdue shown {format_inr(_sum(rows, 'overdue_amount'))}.")
     if rid == "ageing_summary":
         kind = "Receivables" if params.get("group") == "Sundry Debtors" else "Payables"
         parts = "; ".join(

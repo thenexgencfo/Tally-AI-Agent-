@@ -23,7 +23,7 @@ Step-by-step diagrams are in [`docs/diagrams/`](docs/diagrams/). Open `docs/diag
 ## The three rules the design rests on
 
 1. **The model never sees a client identifier.** PANs, GSTINs, Aadhaar, bank details, phone numbers, emails and party names are replaced with placeholders such as `[PARTY_1]` before the model gets any text.
-2. **The model never writes SQL.** It picks one of 14 fixed, reviewed reports and fills in typed parameters. There is no free-form query path anywhere.
+2. **The model never writes SQL.** It picks one of 15 fixed, reviewed reports and fills in typed parameters. There is no free-form query path anywhere.
 3. **The model never produces a number.** Python computes every figure from the database. The model may add an explanation, which is shown only if every figure and name in it appears in the data.
 
 If the model is down, a keyword router answers instead. If the GPU dies, the **Reports (no AI)** tab in the web UI still works.
@@ -76,7 +76,7 @@ every request written to an append-only audit log first; if that fails, nothing 
 | `sql/01–06` | Mirror schema, sync metadata, the 14 report functions, row-level security, append-only audit log, and the loader → mirror ingest bridge |
 | `sql/admin/add_loader_company.sql` | Gives one Tally company its own loader login and schema |
 | `app/masking/` | Identifier recognizers (with a Verhoeff checksum for Aadhaar), the party-name index, and the Redis placeholder vault |
-| `app/reports/registry.py` | The 14 reports, their typed parameters and the minimum role for each. This is the security boundary |
+| `app/reports/registry.py` | The 15 reports, their typed parameters and the minimum role for each. This is the security boundary |
 | `app/agent/` | Date resolution (Indian FY), Ollama client, planner plus keyword fallback, answer composition and grounding check, live Tally lookup |
 | `app/service.py` | The ask pipeline, steps 1–10 |
 | `app/main.py`, `app/static/` | HTTP API and the staff web UI |
@@ -84,11 +84,11 @@ every request written to an append-only audit log first; if that fails, nothing 
 | `sync/` | Windows sync runner and example loader and company configs |
 | `scripts/` | DB setup, API keys, company provisioning, encrypted backup and restore, test runner |
 | `n8n/` | Health/sync alert workflow and the Telegram bot workflow |
-| `tests/` | 157 tests, including production-condition robustness (`test_robustness.py`), covering the security claims end to end. See `SECURITY.md` |
+| `tests/` | 167 tests, including production-condition robustness (`test_robustness.py`), covering the security claims end to end. See `SECURITY.md` |
 
 ## Reports available
 
-Trial balance · ledger balance · ledger statement (running balance) · bills outstanding (bill-wise, aged) · ageing summary · P&L summary · P&L detail · balance sheet · day book · top parties · cash and bank · GST ledger summary · voucher search · party master details (GSTIN, PAN, contact; **senior and partner only**).
+Top overdue parties (creditors or debtors past their credit days, ranked) · trial balance · ledger balance · ledger statement (running balance) · bills outstanding (bill-wise, aged) · ageing summary · P&L summary · P&L detail · balance sheet · day book · top parties · cash and bank · GST ledger summary · voucher search · party master details (GSTIN, PAN, contact; **senior and partner only**).
 
 To add a report, write a SQL function in `sql/03_reports.sql`, add an entry to `app/reports/registry.py`, and write a test. The model can use a report only after that reviewed change.
 

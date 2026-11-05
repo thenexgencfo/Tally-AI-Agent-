@@ -120,6 +120,24 @@ REPORTS: dict[str, ReportSpec] = {
             examples=("which invoices are overdue", "outstanding bills of creditors"),
         ),
         ReportSpec(
+            id="top_overdue_parties",
+            title="Top Overdue Parties",
+            description=(
+                "Parties ranked by the amount past due (older than the party's credit days). "
+                "group is 'Sundry Creditors' for what we owe, 'Sundry Debtors' for what is owed "
+                "to us. limit is how many parties (default 10)."
+            ),
+            function="tally.fn_top_overdue_parties",
+            params=(
+                _D("group", "group", default="Sundry Debtors"),
+                _D("as_of", "date"),
+                _D("limit", "int", required=False, default=10),
+            ),
+            value_columns=("overdue_amount", "overdue_bills", "oldest_overdue_days"),
+            examples=("top 10 creditors by overdue amount", "which customers owe us the most overdue",
+                      "biggest overdue suppliers this month"),
+        ),
+        ReportSpec(
             id="ageing_summary",
             title="Ageing Summary",
             description="Totals per ageing bucket (0-30, 31-60, 61-90, 91-180, 180+).",

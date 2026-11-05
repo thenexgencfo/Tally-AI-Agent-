@@ -351,3 +351,26 @@ async def test_ingest_loads_opening_bills_and_closing_stock(owner_con):
     finally:
         await owner_con.execute("DELETE FROM tally.mst_company WHERE company_id = 92")
         await owner_con.execute("DROP SCHEMA IF EXISTS loader_ob CASCADE")
+
+
+async def test_top_overdue_parties_ranks_by_overdue_amount_past_credit_days():
+    r = await rows("top_overdue_parties", {"group": "Sundry Debtors", "as_of": "2025-03-31", "limit": 2})
+    # Citrine 177000 (131 days, 30-day terms), Acme 150000 (opening bill, 45+ days)
+    assert [(x["party"], x["overdue_amount"]) for x in r] == [
+        ("Citrine Realty", Decimal("177000.00")), ("Acme Interiors Pvt Ltd", Decimal("150000.00"))]
+    assert r[0]["oldest_overdue_days"] == 131 and r[0]["credit_days"] == 30
+    c = await rows("top_overdue_parties", {"group": "Sundry Creditors", "as_of": "2025-03-31"})
+    assert [(x["party"], x["overdue_amount"]) for x in c] == [("Deepak Stationers", Decimal("20000.00"))]
+
+
+async def test_not_yet_due_bills_are_not_overdue():
+    # Citrine's bill is 131 days old at 31 Mar but only 4 days old on 24 Nov 2024 (< 30-day terms)
+    r = await rows("top_overdue_parties", {"group": "Sundry Debtors", "as_of": "2024-11-24"})
+    assert "Citrine Realty" not in [x["party"] for x in r]
+
+
+async def test_top_overdue_in_a_company_with_advances(co600):
+    r = await rows("top_overdue_parties", {"group": "Sundry Debtors", "as_of": "2025-03-31", "limit": 5},
+                   company=600, scope=(600,))
+    assert [x["party"] for x in r][0] == "Gupta Agencies"      # advance of Kapoor is never "overdue"
+    assert "Kapoor Exports" not in [x["party"] for x in r]

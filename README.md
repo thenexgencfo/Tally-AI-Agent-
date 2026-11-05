@@ -13,7 +13,7 @@ Everything runs on the firm's own PC, with a **local AI model**. No client data 
 | Rule | What it means |
 |---|---|
 | **The AI never sees client details** | Party names, PAN, GSTIN, Aadhaar, phone numbers, emails and bank account numbers are replaced with placeholders such as `[PARTY_1]` before any text reaches the model. |
-| **The AI never writes SQL** | It chooses one of 14 fixed, reviewed reports (trial balance, ledger balance, ageing, P&L, balance sheet, GST and more) and fills typed parameters. Nothing else can run. |
+| **The AI never writes SQL** | It chooses one of 15 fixed, reviewed reports (trial balance, ledger balance, ageing, P&L, balance sheet, GST and more) and fills typed parameters. Nothing else can run. |
 | **The AI never produces a number** | Every figure is computed in code from the books. An AI-written explanation is dropped unless its figures match the data. |
 | **Every question is recorded** | An append-only audit log stores the masked question, the report and the row count. If it can't be written, no answer is returned. |
 | **Each person sees only what they should** | Access is per company. Juniors and Telegram users see "Party 1" instead of real names. Removing a person from the user list takes effect immediately. |
@@ -56,7 +56,7 @@ Then follow the [setup guide](tally-agent/SETUP-WINDOWS.md) from Part B.
 | `tally-agent/deploy/` | Docker Compose, Caddy and environment template |
 | `tally-agent/sync/`, `tally-agent/scripts/` | Windows sync runner, company setup, API keys, encrypted backup and restore |
 | `tally-agent/n8n/` | Telegram bot and health-alert workflows |
-| `tally-agent/tests/` | 157 automated tests, including messy production-like data, outages and hostile input |
+| `tally-agent/tests/` | 167 automated tests, including messy production-like data, outages and hostile input |
 | `tally-agent/docs/diagrams/` | Architecture diagrams |
 | `FORMS-SETUP.md`, `audit-common.js`, `form-tests/` | Left over from the store audit forms, whose pages were removed from this repository |
 
@@ -66,7 +66,7 @@ TallyPrime (XML export) · tally-database-loader · PostgreSQL 16 · Redis · Ol
 
 ## Status
 
-The code, database and containers have been tested end to end: 157 automated tests, plus a full container run. Before staff rely on it, three things still need checking on the firm's own PC:
+The code, database and containers have been tested end to end: 167 automated tests, plus a full container run. Before staff rely on it, three things still need checking on the firm's own PC:
 
 1. The real AI model on the GPU.
 2. The agent's trial balance against Tally's own, for a real company.
