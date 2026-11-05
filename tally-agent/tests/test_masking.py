@@ -110,3 +110,22 @@ async def test_name_variants_and_company_name(engine):
 async def test_digit_only_narration_is_masked(engine):
     [out] = await engine.mask_rows([{"narration": "9820011223", "amount": "9820011223.00"}], "s")
     assert out["narration"].startswith("[PHONE_") and out["amount"] == "9820011223.00"
+
+
+async def test_short_all_caps_names_are_masked(engine):
+    # "ITC company" is how people write "ITC Limited"; 3 letters used to be skipped.
+    idx = NameIndex.build(["ITC Limited", "Hindustan Paper Mills", "Sharma Packaging Co"],
+                          ["Cash", "Sales"], company="White Design Consultants")
+    m = await engine.mask_text("What is the outstanding from ITC company?", "s", names=idx)
+    assert "ITC" not in m.text and "[PARTY_" in m.text
+    tok = m.text[m.text.index("["):m.text.index("]") + 1]
+    assert await engine.unmask_text(tok, "s") == "ITC Limited"
+    # ordinary short words are not swallowed
+    assert (await engine.mask_text("the cost of sales", "s", names=idx)).text == "the cost of sales"
+
+
+async def test_reference_numbers_mask_the_party_part_but_restore_verbatim(engine):
+    idx = NameIndex.build(["ITC Limited"], ["Cash"])
+    [row] = await engine.mask_rows([{"bill_ref": "ITC/889", "outstanding": "420000.00"}], "s", names=idx)
+    assert "ITC" not in row["bill_ref"] and row["outstanding"] == "420000.00"
+    assert await engine.redisplay(row["bill_ref"], "s", may_unmask=True) == "ITC/889"   # not "ITC Limited/889"

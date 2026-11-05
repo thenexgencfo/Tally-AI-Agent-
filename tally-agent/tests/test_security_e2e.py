@@ -238,3 +238,16 @@ async def test_company_name_never_reaches_model(redis_client):
     await make_service(redis_client, llm).ask(
         user("partner"), "net profit of White Design Consultants for FY 2024-25", 1)
     assert all("white design" not in (s + u).lower() for s, u in llm.prompts)
+
+
+async def test_itc_outstanding_and_top_creditors_end_to_end(redis_client):
+    """The two questions a partner asks first: a short-name party balance and a ranked overdue list."""
+    llm = FakeLLM(plan=rules_router("partner"), narrative=echo_everything)
+    svc = make_service(redis_client, llm)
+    res = await svc.ask(user("partner"), "What is the outstanding from Deepak company?", 1)
+    assert res.report_id == "ledger_balance" and "Deepak Stationers" in res.answer and "₹20,000.00 Cr" in res.answer
+    res = await svc.ask(user("partner"), "Show me my top 10 creditors by overdue amount this month", 1)
+    assert res.report_id == "top_overdue_parties" and res.params["group"] == "Sundry Creditors"
+    assert "Deepak Stationers" in res.answer
+    for system, msg in llm.prompts:
+        assert "deepak" not in (system + msg).lower()

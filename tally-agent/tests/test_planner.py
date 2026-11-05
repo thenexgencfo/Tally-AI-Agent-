@@ -114,3 +114,15 @@ async def test_model_receivables_choice_respected_for_customer_questions():
     llm = FakeLLM(plan={"report_id": "bills_outstanding", "params": {"group": "Sundry Debtors"}})
     plan = await Planner(llm).plan("customers yet to pay", "junior", TODAY)
     assert plan.params["group"] == "Sundry Debtors"
+
+
+@pytest.mark.parametrize("q,group,limit", [
+    ("Show me my top 10 creditors by overdue amount this month", "Sundry Creditors", 10),
+    ("top 5 debtors by overdue amount", "Sundry Debtors", 5),
+    ("biggest overdue suppliers", "Sundry Creditors", 10),
+    ("which customers owe us the most overdue", "Sundry Debtors", 10),
+])
+async def test_top_overdue_routing(q, group, limit):
+    plan = await Planner(None).plan(q, "junior", TODAY)
+    assert plan.report_id == "top_overdue_parties"
+    assert (plan.params["group"], plan.params.get("limit", 10)) == (group, limit)   # 10 = registry default

@@ -491,3 +491,34 @@ LANGUAGE sql STABLE SECURITY INVOKER SET search_path = tally, pg_temp AS $$
     SELECT EXISTS (SELECT 1 FROM trn_inventory WHERE company_id = p_company)
        AND NOT EXISTS (SELECT 1 FROM trn_closingstock WHERE company_id = p_company);
 $$;
+
+
+-- ---------------------------------------------- 14. top overdue parties
+-- Parties ranked by the amount that is past due. A bill is overdue once it is
+-- older than the party's credit days (0 when none is set, as in Tally). Built on
+-- fn_bills_outstanding with NO row limit, so totals are complete; advances are
+-- not counted as overdue.
+CREATE OR REPLACE FUNCTION fn_top_overdue_parties(p_company integer, p_group text,
+                                                  p_asof date, p_limit integer)
+RETURNS TABLE (party varchar, overdue_amount numeric, overdue_bills bigint,
+               oldest_overdue_days integer, total_outstanding numeric, credit_days integer)
+LANGUAGE sql STABLE SECURITY INVOKER SET search_path = tally, pg_temp AS $$
+    WITH b AS (
+        SELECT x.party AS pty, x.age_days AS age, x.outstanding AS amt,
+               COALESCE(l.credit_days, 0) AS cd
+        FROM fn_bills_outstanding(p_company, p_group, p_asof, NULL) x
+        LEFT JOIN mst_ledger l ON l.company_id = p_company AND l.name = x.party
+        WHERE x.kind = 'Bill'
+    )
+    SELECT b.pty::varchar,
+           SUM(b.amt) FILTER (WHERE b.age > b.cd)::numeric,
+           (COUNT(*) FILTER (WHERE b.age > b.cd))::bigint,
+           (MAX(b.age) FILTER (WHERE b.age > b.cd))::integer,
+           SUM(b.amt)::numeric,
+           MAX(b.cd)::integer
+    FROM b
+    GROUP BY b.pty
+    HAVING COALESCE(SUM(b.amt) FILTER (WHERE b.age > b.cd), 0) > 0.005
+    ORDER BY 2 DESC, 1
+    LIMIT LEAST(COALESCE(p_limit, 10), 100);
+$$;

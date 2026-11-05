@@ -62,6 +62,9 @@ SENSITIVE_COLUMNS: dict[str, str] = {
 # Columns holding a party/ledger name. Masked only when the value appears in
 # the company's party dictionary -- so "Salaries" and "Design Fees" stay
 # readable while "Acme Interiors Pvt Ltd" does not.
+# Reference columns ("ITC/889") often embed a party abbreviation. The party part is
+# masked, but the original text is what gets restored for display.
+REF_COLUMNS: frozenset[str] = frozenset({"bill_ref", "voucher_number", "reference_number"})
 NAME_COLUMNS: frozenset[str] = frozenset(
     {"party", "party_name", "ledger", "bank_account_holder", "mailing_name"}
 )
@@ -152,7 +155,9 @@ class NameIndex:
         owners: dict[str, set[tuple[str, str]]] = {}
         for full, (name, ent) in list(canon.items()):
             for v in _variants(normalize_text(name)):
-                if len(v) >= 5 and v.lower() not in other_full:
+                # "ITC" for "ITC Limited": an all-caps abbreviation of 3+ letters counts.
+                short_ok = len(v) >= 3 and v.isupper() and " " not in v and v.lower() not in _ALIAS_STOPWORDS
+                if (len(v) >= 5 or short_ok) and v.lower() not in other_full:
                     owners.setdefault(v.lower(), set()).add((name, ent))
         for v, who in owners.items():
             if len(who) == 1 and v not in canon:
@@ -162,6 +167,7 @@ class NameIndex:
         # honorifics/initials), unique across parties, absent from every
         # non-party ledger name -- so "Design" never masks "Design Fees".
         first_words: dict[str, set[tuple[str, str]]] = {}
+        upper_words: set[str] = set()
         for name, ent in set(canon.values()):
             norm = normalize_text(name).strip()
             core = (_variants(norm) or [norm])[-1]
@@ -169,10 +175,15 @@ class NameIndex:
             if len(words) < 2:
                 continue
             first_words.setdefault(words[0].lower(), set()).add((name, ent))
+            if words[0].isupper():
+                upper_words.add(words[0].lower())
         for word, who in first_words.items():
+            # People type "ITC", "HUL", "L&T" for "ITC Limited": all-caps first words
+            # count from 3 letters; ordinary words need 4.
+            long_enough = len(word) >= 4 or (len(word) >= 3 and word in upper_words)
             if (
                 len(who) == 1
-                and len(word) >= 4
+                and long_enough
                 and word not in _ALIAS_STOPWORDS
                 and word not in other_words
                 and word not in canon
@@ -246,6 +257,7 @@ class MaskingEngine:
         *,
         names: "NameIndex | None" = None,
         include_column_only: bool = False,
+        literal_names: bool = False,
     ) -> MaskResult:
         if not text:
             return MaskResult(text or "", [])
@@ -261,8 +273,11 @@ class MaskingEngine:
                 # Store the canonical ledger name, so "Acme" in a question and
                 # "Acme Interiors Pvt Ltd" in a result share one token and the
                 # database receives the exact name.
-                canonical = names.canonical(m.group(0))
-                matches.append(Match(m.start(), m.end(), canonical, names.entity(m.group(0))))
+                if literal_names:
+                    matches.append(Match(m.start(), m.end(), m.group(0), "REF"))
+                else:
+                    canonical = names.canonical(m.group(0))
+                    matches.append(Match(m.start(), m.end(), canonical, names.entity(m.group(0))))
 
         if not matches:
             return MaskResult(text, [])
@@ -299,6 +314,9 @@ class MaskingEngine:
                     new[key] = await self._vault.token_for(
                         session, SENSITIVE_COLUMNS[lkey], str(value)
                     )
+                elif lkey in REF_COLUMNS and isinstance(value, str):
+                    res = await self.mask_text(value, session, names=names, literal_names=True)
+                    new[key] = res.text
                 elif lkey in NAME_COLUMNS and names is not None:
                     res = await self.mask_text(str(value), session, names=names)
                     new[key] = res.text

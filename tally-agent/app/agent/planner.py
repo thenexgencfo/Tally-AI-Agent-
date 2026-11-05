@@ -159,6 +159,11 @@ def finalize(spec: ReportSpec, params: dict[str, Any], question: str, period: Pe
 
     party_tokens = _tokens(question)
     for p in spec.params:
+        if p.name == "limit" and not p.internal:
+            m = re.search(r"\b(?:top|first|biggest|largest|worst)\s+(\d{1,3})\b", question.lower())
+            if m:
+                out["limit"] = max(1, min(int(m.group(1)), 100))
+    for p in spec.params:
         if p.internal:
             continue
         if p.type == "ledger":
@@ -247,6 +252,9 @@ _RULES_WITH_PARTY: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"vouchers?|invoices?|payments?|receipts?|bills? (?:of|from|to)"), "voucher_search"),
 ]
 _RULES_GENERAL: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"(?:top|biggest|largest|highest|major|worst|most)\b.*\boverdue|\boverdue\b.*(?:top|biggest|largest|highest|worst|most)"
+                r"|(?:creditors|debtors|parties|customers|suppliers|vendors)\b.*\bby\b.*\boverdue"),
+     "top_overdue_parties"),
     (re.compile(r"trial balance|\btb\b"), "trial_balance"),
     (re.compile(r"balance ?sheet"), "balance_sheet"),
     (re.compile(r"ageing|aging|how old|age-?wise|bucket"), "ageing_summary"),
